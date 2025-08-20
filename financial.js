@@ -26,10 +26,6 @@ function formatDateToQuarter(dateStr) {
 
 /**
  * Daum 증권(WiseFn)에서 HTML 데이터를 파싱하여 분기별 실적을 '억원' 단위로 반환합니다.
- * getNaverQuarterlyEarnings와 동일한 입출력 형식을 가집니다.
- * @param {string} companyCode - 종목 코드 (예: '317850')
- * @param {string} statementType - 재무제표 유형 ('연결' 또는 '별도')
- * @returns {Promise<Array|null>} 분기별 실적 데이터 배열 또는 null
  */
 async function getQuarterlyEarnings(companyCode, statementType) {
      if (!companyCode || !statementType) {
@@ -39,7 +35,6 @@ async function getQuarterlyEarnings(companyCode, statementType) {
           return null;
      }
 
-     // statementType에 따라 finGubun 값을 매핑
      const finGubun = statementType === '연결' ? 'IFRSL' : 'IFRSS';
      const url = `https://wisefn.finance.daum.net/v1/company/cF3001.aspx?cmp_cd=${companyCode}&frq=Q&rpt=ISM&finGubun=${finGubun}`;
 
@@ -64,10 +59,9 @@ async function getQuarterlyEarnings(companyCode, statementType) {
           const keywords = {
                매출액: 'sales',
                영업이익: 'operatingProfit',
-               순이익: 'netIncome', // Daum은 '당기순이익'이 아닌 '순이익'으로 표기
+               순이익: 'netIncome',
           };
 
-          // HTML 내의 <area> 태그에 데이터가 포함되어 있음
           $('area').each((i, elem) => {
                const title = $(elem).attr('title');
                if (title) {
@@ -120,24 +114,89 @@ async function getQuarterlyEarnings(companyCode, statementType) {
      }
 }
 
-// // 1. 연결 재무제표 조회
-// getQuarterlyEarnings('317850', '연결').then((data) => {
-//      console.log('\n--- [연결] 재무제표 결과 ---');
-//      if (data) {
-//           console.log(JSON.stringify(data, null, 2));
-//      }
-// });
+/**
+ * [수정] 네이버 증권에서 시가총액을 조회하는 함수 (단위: 억원)
+ * @param {string} stockCode - 종목 코드 (예: '000660')
+ * @returns {Promise<number|null>} - 시가총액(억원 단위) 또는 실패 시 null
+ */
+async function getMarketCap(stockCode) {
+     if (!stockCode) {
+          Logger.log('에러: 종목 코드를 입력해야 합니다.');
+          return null;
+     }
+     const url = `https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd=${stockCode}&cn=`;
+     Logger.log(` -> 시가총액 조회 시도... [${stockCode}]`);
 
-// // 2. 별도 재무제표 조회 (만약 데이터가 있다면)
-// getQuarterlyEarnings('317850', '별도').then((data) => {
-//      console.log('\n--- [별도] 재무제표 결과 ---');
-//      if (data) {
-//           console.log(JSON.stringify(data, null, 2));
-//      } else {
-//           console.log('별도 재무 데이터를 가져올 수 없거나 데이터가 없습니다.');
-//      }
-// });
+     try {
+          const response = await axios.get(url, {
+               headers: {
+                    'User-Agent':
+                         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+               },
+          });
+
+          if (response.status !== 200) {
+               Logger.log(
+                    ` -> 시가총액 페이지 조회 실패. 응답코드: ${response.status}`
+               );
+               return null;
+          }
+
+          const $ = cheerio.load(response.data);
+
+          const marketCapText = $('th.txt:contains("시가총액")')
+               .next('td.num')
+               .text()
+               .trim();
+
+          if (!marketCapText) {
+               Logger.log(` -> 페이지에서 시가총액 정보를 찾지 못했습니다.`);
+               return null;
+          }
+
+          // ★★★ [수정] 바로 텍스트를 숫자로 변환하는 간결한 로직 ★★★
+          const cleanedText = marketCapText
+               .replace(/,/g, '')
+               .replace('억원', '');
+          const marketCapInEok = parseInt(cleanedText, 10);
+
+          if (!isNaN(marketCapInEok)) {
+               Logger.log(
+                    ` -> 시가총액 추출 성공: ${marketCapText} -> ${marketCapInEok.toLocaleString()}억원`
+               );
+               return marketCapInEok;
+          } else {
+               Logger.log(` -> 시가총액 숫자 변환 실패: "${marketCapText}"`);
+               return null;
+          }
+     } catch (e) {
+          Logger.log(` -> 시가총액 조회 중 오류 발생: ${e.message}`);
+          return null;
+     }
+}
+
+// =================================================================
+// SECTION: 테스트용 코드
+// =================================================================
+
+async function testGetMarketCap() {
+     Logger.log('--- 시가총액 조회 함수 테스트 시작 (단위: 억원) ---');
+     const skHynix = await getMarketCap('000660');
+     console.log(`SK하이닉스 시가총액: ${skHynix} 억원`);
+
+     const samsungElec = await getMarketCap('005930');
+     console.log(`삼성전자 시가총액: ${samsungElec} 억원`);
+
+     const posco = await getMarketCap('005490');
+     console.log(`포스코홀딩스 시가총액: ${posco} 억원`);
+     Logger.log('--- 시가총액 조회 함수 테스트 종료 ---');
+}
+
+(async () => {
+     await testGetMarketCap();
+})();
 
 module.exports = {
      getQuarterlyEarnings,
+     getMarketCap,
 };

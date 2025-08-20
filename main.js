@@ -7,7 +7,6 @@ const {
      Logger,
      PropertiesService,
      Utilities,
-
      Cheerio,
 } = require('./gas-compatibility');
 const { getQuarterlyEarnings } = require('./financial');
@@ -17,6 +16,7 @@ const {
      createTelegramCaption,
      sendTelegramMessage,
      sendTelegramMediaGroup,
+     calculateImportanceScore, // [추가] 중요도 계산 함수 임포트
 } = require('./helper');
 const {
      generateStockChartImage,
@@ -27,7 +27,7 @@ const {
 // =================================================================
 // SECTION 1: 핵심 로직 헬퍼 함수
 // =================================================================
-
+// (이 섹션의 코드는 변경 사항이 없습니다. 기존 코드 그대로 유지)
 /**
  * 특정 통화의 현재 원화(KRW) 환율을 가져옵니다.
  */
@@ -772,16 +772,10 @@ async function fetchDisclosureList() {
                );
                const apiUrl = `https://opendart.fss.or.kr/api/list.json?crtfc_key=${API_KEY}&bgn_de=${beginDate}&end_de=${endDate}&page_count=100&page_no=${pageNo}`;
 
-               // ============ [변경점 시작] ============
                const response = await axios.get(apiUrl, {
-                    // DART API는 에러 발생 시 200 OK와 함께 에러 코드를 JSON으로 반환하므로,
-                    // validateStatus 옵션이 필수는 아니지만, 만일을 대비해 추가할 수 있습니다.
                     validateStatus: () => true,
                });
-
-               // axios는 JSON 응답을 자동으로 파싱하여 response.data에 담아줍니다.
                const result = response.data;
-               // ============ [변경점 끝] ============
 
                if (result.status !== '000' || !result.list) {
                     if (result.status === '013') {
@@ -804,7 +798,7 @@ async function fetchDisclosureList() {
                          !report.report_nm.includes('연장') &&
                          !report.report_nm.includes('첨부추가') &&
                          !report.report_nm.includes('자회사의 주요경영사항') &&
-                         !report.corp_name.includes('스팩') // 스팩인 경우에는 제거
+                         !report.corp_name.includes('스팩')
                     ) {
                          const reportType = getReportType(report.report_nm);
                          if (reportType) {
@@ -820,7 +814,6 @@ async function fetchDisclosureList() {
           Logger.log(`총 ${collectedReports.length}개의 유효 공시 수집 완료.`);
           return collectedReports.slice(0, TARGET_COUNT);
      } catch (e) {
-          // axios.get에서 네트워크 연결 실패 등 심각한 오류 발생 시 catch됩니다.
           Logger.log(`API 목록 조회 중 오류 발생: ${e.toString()}`);
           return null;
      }
@@ -887,7 +880,6 @@ async function processSingleDisclosure(report) {
      );
      await Utilities.sleep(200);
 
-     // ★★★ 해당 분기 컨센서스 데이터 조회 추가 ★★★
      const consensus = await getNaverConsensus(
           report.stock_code,
           statementType,
@@ -895,7 +887,6 @@ async function processSingleDisclosure(report) {
      );
      await Utilities.sleep(200);
 
-     // DART 실적만 있는 경우, 네이버 조회 실패 시 그대로 반환
      const createDartOnlyResult = (errorMsg) => {
           const dartQuarterlyData = [];
           for (const [key, value] of Object.entries(extractedData.earnings)) {
@@ -924,7 +915,6 @@ async function processSingleDisclosure(report) {
           return createDartOnlyResult('과거 분기 데이터 조회 실패');
      }
 
-     // ★★★ 연간 실적 변환 전, 데이터 유효성 검사 ★★★
      if (extractedData.isAnnual) {
           const year = extractedData.quarter.slice(2);
           const quartersInYear = new Set(
@@ -957,13 +947,21 @@ async function processSingleDisclosure(report) {
           naverEarnings
      );
 
+     // [추가] 중요도 점수 계산
+     Logger.log(' -> 실적 중요도 점수 계산...');
+     const importanceScores = calculateImportanceScore(
+          final5QuartersData,
+          consensus
+     );
+
      return {
           ...report,
           ...numbers,
           statementType,
           quarterlyEarnings: final5QuartersData,
           unitMultiplier: extractedData.unitMultiplier,
-          consensus: consensus, // ★★★ 최종 결과에 컨센서스 추가 ★★★
+          consensus: consensus,
+          importanceScores: importanceScores, // [추가] 최종 결과에 중요도 점수 추가
      };
 }
 
@@ -997,7 +995,6 @@ async function runSequentialProcessing() {
 
                const mediaBlobs = [];
 
-               // 차트 이미지 생성
                Logger.log(' -> 차트 이미지 생성 시도...');
                const stockChart = await generateStockChartImage(
                     result.stock_code,
@@ -1024,10 +1021,8 @@ async function runSequentialProcessing() {
                          mediaBlobs.push(consensusCharts.opChart);
                }
 
-               // 캡션 생성은 헬퍼 함수에 위임
                const caption = createTelegramCaption(result);
 
-               // 텔레그램 전송
                if (mediaBlobs.length > 0) {
                     Logger.log('미디어를 텔레그램으로 전송합니다.');
                     await sendTelegramMediaGroup(mediaBlobs, caption);
@@ -1048,6 +1043,7 @@ async function runSequentialProcessing() {
 // =================================================================
 // SECTION 3: 테스트 실행 함수
 // =================================================================
+// (이 섹션의 코드는 변경 사항이 없습니다. 기존 코드 그대로 유지)
 
 function getUnitText(multiplier) {
      if (multiplier === 1000) return '천원';
@@ -1191,9 +1187,6 @@ async function testSingleRcpNo_AutoDetect(rcpNo) {
 // =================================================================
 // SECTION 4: 스크립트 실행
 // =================================================================
-// 이 파일(main.js)을 실행할 때 어떤 함수를 호출할지 결정합니다.
-// 아래 함수들 중 실행하고 싶은 함수의 주석을 해제하세요.
-
 (async () => {
      // await testSingleRcpNo_AutoDetect('20250320001632');
      await runFullProcessAndLogResults();

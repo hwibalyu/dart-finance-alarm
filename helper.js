@@ -4,7 +4,6 @@ const FormData = require('form-data');
 
 // =================================================================
 // SECTION: 텍스트 및 숫자 포맷팅 헬퍼 함수
-// (이 부분은 변경 사항이 없습니다)
 // =================================================================
 
 function padNumber(num, width) {
@@ -33,27 +32,153 @@ function getUnitText(multiplier) {
      if (multiplier > 5 && multiplier < 15) return 'JPY';
      return '원';
 }
-function formatEarningsWithConsensus(label, actual, consensus) {
+function formatEarningsWithConsensus(
+     label,
+     actual,
+     consensus,
+     importanceText = ''
+) {
      let output = `*${label}:* ${formatNumberWithCommas(actual)}`;
      if (consensus !== null && consensus !== undefined && consensus !== 0) {
           const achievementRate =
                consensus > 0
                     ? ((actual / consensus - 1) * 100).toFixed(0) + '%'
                     : '-';
-          output += `${consensus ? '  (' : ''} ${formatNumberWithCommas(
+          output += ` (${formatNumberWithCommas(
                consensus
-          )}, ${achievementRate} ${consensus ? ')' : ''}`;
+          )}, ${achievementRate})`;
      }
+     output += importanceText;
      return output;
 }
 
 // =================================================================
+// SECTION: 중요도 계산 함수
+// =================================================================
+
+/**
+ * Legacy Code 기반의 실적 중요도 점수 계산 함수
+ * @param {Array} quarterlyEarnings - 5분기 실적 데이터 배열
+ * @param {Object} consensus - 컨센서스 데이터 객체
+ * @returns {Object} - { sales: 점수, operatingProfit: 점수, netIncome: 점수 }
+ */
+function calculateImportanceScore(quarterlyEarnings, consensus) {
+     if (!quarterlyEarnings || quarterlyEarnings.length === 0) {
+          return { sales: 0, operatingProfit: 0, netIncome: 0 };
+     }
+
+     // 1. 데이터 구조화
+     const structuredData = {
+          sales: { actual: null, forecast: null, yoy: null, qoq: null },
+          operatingProfit: {
+               actual: null,
+               forecast: null,
+               yoy: null,
+               qoq: null,
+          },
+          netIncome: { actual: null, forecast: null, yoy: null, qoq: null },
+     };
+
+     const latestQuarterStr = quarterlyEarnings[0].quarter;
+     const [latestQ, latestY] = latestQuarterStr.split('Q').map(Number);
+
+     const qoqY = latestQ === 1 ? latestY - 1 : latestY;
+     const qoqQ = latestQ === 1 ? 4 : latestQ - 1;
+     const qoqQuarterStr = `${qoqQ}Q${qoqY}`;
+     const yoyQuarterStr = `${latestQ}Q${latestY - 1}`;
+
+     // quarterlyEarnings 배열을 순회하며 데이터 채우기
+     for (const earning of quarterlyEarnings) {
+          // ★★★ [수정] structuredData에 해당 item 키가 존재하는지 먼저 확인 ★★★
+          if (structuredData[earning.item]) {
+               if (earning.quarter === latestQuarterStr) {
+                    structuredData[earning.item].actual = earning.value;
+               } else if (earning.quarter === qoqQuarterStr) {
+                    structuredData[earning.item].qoq = earning.value;
+               } else if (earning.quarter === yoyQuarterStr) {
+                    structuredData[earning.item].yoy = earning.value;
+               }
+          }
+     }
+
+     // 컨센서스 데이터 채우기
+     if (consensus) {
+          structuredData.sales.forecast = consensus.sales;
+          structuredData.operatingProfit.forecast = consensus.operatingProfit;
+          structuredData.netIncome.forecast = consensus.netIncome;
+     }
+
+     // 2. 중요도 점수 계산 (Legacy Code 로직)
+     const importance = { sales: 0, operatingProfit: 0, netIncome: 0 };
+     const factors = ['forecast', 'yoy', 'qoq'];
+
+     for (const key of ['sales', 'operatingProfit', 'netIncome']) {
+          let totalScore = 0;
+          const { actual } = structuredData[key];
+
+          if (actual === null || actual === undefined) continue;
+
+          for (const factor of factors) {
+               const vs = structuredData[key][factor];
+
+               if (factor === 'forecast' && (vs === null || vs === 0)) {
+                    continue;
+               }
+               if (vs === null || vs === undefined) continue;
+
+               let scoreForFactor = 0;
+
+               if (actual > 0 && vs > 0) {
+                    const growth = ((actual - vs) / vs) * 100;
+                    if (growth >= 0) {
+                         const clampedGrowth = Math.min(growth, 100);
+                         scoreForFactor =
+                              clampedGrowth *
+                              (factor === 'forecast' ? 1.65 : 1.5);
+                         if (key === 'operatingProfit') {
+                              if (actual > 500) scoreForFactor *= 1.35;
+                              else if (actual > 250) scoreForFactor *= 1.3;
+                              else if (actual > 100) scoreForFactor *= 1.2;
+                         }
+                    } else {
+                         const clampedGrowth = Math.max(growth, -50);
+                         scoreForFactor = clampedGrowth * 1.5;
+                    }
+               } else if (actual > 0 && vs <= 0) {
+                    scoreForFactor = 100;
+               } else if (actual <= 0 && vs > 0) {
+                    scoreForFactor = -65;
+               } else if (actual <= 0 && vs <= 0) {
+                    if (actual > vs) {
+                         scoreForFactor = 40;
+                    } else {
+                         scoreForFactor = -20;
+                    }
+               }
+
+               totalScore += scoreForFactor;
+          }
+
+          let finalImportance = 0;
+          if (totalScore >= 300) finalImportance = 6;
+          else if (totalScore >= 200) finalImportance = 5;
+          else if (totalScore >= 150) finalImportance = 4;
+          else if (totalScore >= 100) finalImportance = 3;
+          else if (totalScore >= 40) finalImportance = 2;
+          else if (totalScore >= 20) finalImportance = 1;
+
+          if (actual < 0) finalImportance = 0;
+          importance[key] = finalImportance;
+     }
+
+     return importance;
+}
+
+// =================================================================
 // SECTION: 텔레그램 메시지 생성 및 전송 함수
-// (이 부분 코드를 axios를 사용하도록 변경합니다)
 // =================================================================
 
 function createTelegramCaption(result) {
-     // (이 함수는 네트워크 요청이 없으므로 변경 사항 없음)
      let caption = `🏢 *${result.corp_name} (${result.stock_code})*\n`;
      caption += `[${result.report_nm.trim()}](${`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${result.rcept_no}`})\n\n`;
 
@@ -70,29 +195,46 @@ function createTelegramCaption(result) {
           const latestQuarter = result.quarterlyEarnings[0].quarter;
           const latestEarnings = earningsByQuarter[latestQuarter];
           const consensus = result.consensus;
+          const scores = result.importanceScores || {
+               sales: 0,
+               operatingProfit: 0,
+               netIncome: 0,
+          };
+          const icons = { 5: '🔥', 6: '🚨' };
+
+          // 중요도가 0 이하인 경우 빈 문자열 반환
+          const getImportanceText = (score) => {
+               if (score <= 0) return '';
+               const icon = icons[score] || '';
+               return `  ${icon}중요${score}`;
+          };
 
           if (latestEarnings) {
                caption +=
                     formatEarningsWithConsensus(
                          '매',
                          latestEarnings.sales,
-                         consensus ? consensus.sales : null
+                         consensus ? consensus.sales : null,
+                         getImportanceText(scores.sales)
                     ) + '\n';
                caption +=
                     formatEarningsWithConsensus(
                          '영',
                          latestEarnings.operatingProfit,
-                         consensus ? consensus.operatingProfit : null
+                         consensus ? consensus.operatingProfit : null,
+                         getImportanceText(scores.operatingProfit)
                     ) + '\n';
                caption +=
                     formatEarningsWithConsensus(
                          '순',
                          latestEarnings.netIncome,
-                         consensus ? consensus.netIncome : null
+                         consensus ? consensus.netIncome : null,
+                         getImportanceText(scores.netIncome)
                     ) + '\n\n';
           }
 
           caption += '------------------------------------\n';
+          caption += '`[분기]` `매출` `영업` `순익` (억원)\n';
 
           for (const quarter in earningsByQuarter) {
                const qEarnings = earningsByQuarter[quarter];
@@ -136,15 +278,10 @@ async function sendTelegramMessage(text) {
      };
 
      try {
-          // ============ [변경점] ============
-          // UrlFetchApp.fetch -> axios.post
-          // JSON payload는 axios가 자동으로 직렬화해줍니다.
           await axios.post(url, payload, {
                headers: { 'Content-Type': 'application/json' },
           });
-          // =================================
      } catch (e) {
-          // axios 에러는 e.response.data에 더 상세한 정보가 있을 수 있습니다.
           const errorInfo = e.response
                ? JSON.stringify(e.response.data)
                : e.message;
@@ -177,8 +314,6 @@ async function sendTelegramMediaGroup(blobs, caption) {
 
      const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMediaGroup`;
 
-     // ============ [변경점 시작] ============
-     // 1. FormData 객체 생성은 동일합니다.
      const formData = new FormData();
      formData.append('chat_id', TELEGRAM_CHAT_ID);
 
@@ -192,7 +327,6 @@ async function sendTelegramMediaGroup(blobs, caption) {
                mediaObject.caption = caption;
                mediaObject.parse_mode = 'Markdown';
           }
-          // blob._buffer는 호환성 레이어에서 온 Buffer 객체입니다.
           formData.append(attachName, blob._buffer || blob, {
                filename: attachName,
           });
@@ -202,8 +336,6 @@ async function sendTelegramMediaGroup(blobs, caption) {
      formData.append('media', JSON.stringify(media));
 
      try {
-          // 2. axios.post로 FormData를 전송합니다.
-          //    이때, 헤더는 form-data 라이브러리가 자동으로 생성하도록 맡깁니다.
           await axios.post(url, formData, {
                headers: formData.getHeaders(),
           });
@@ -213,7 +345,6 @@ async function sendTelegramMediaGroup(blobs, caption) {
                : e.message;
           Logger.log(`텔레그램 미디어 그룹 전송 실패: ${errorInfo}`);
      }
-     // ============ [변경점 끝] ============
 }
 
 module.exports = {
@@ -223,4 +354,5 @@ module.exports = {
      createTelegramCaption,
      sendTelegramMessage,
      sendTelegramMediaGroup,
+     calculateImportanceScore,
 };
