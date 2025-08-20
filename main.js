@@ -10,7 +10,7 @@ const {
 
      Cheerio,
 } = require('./gas-compatibility');
-const { getNaverQuarterlyEarnings } = require('./financial');
+const { getQuarterlyEarnings } = require('./financial');
 const { getNaverConsensus } = require('./consensus');
 const { calculate5QuarterEarnings } = require('./quarter');
 const {
@@ -197,6 +197,10 @@ async function getDisclosureNumbers(rcpNo) {
 
 /**
  * 보고서 유형을 받아 '올바른' 포괄손익계산서 URL 하나를 찾아서 반환합니다.
+ * 우선순위:
+ * 1. eleId 16, 21, 29 순서로 '연결' 손익계산서를 찾습니다. 발견 즉시 함수를 종료하고 해당 값을 반환합니다.
+ * 2. '연결'을 못 찾으면, 루프를 계속 돌며 첫 번째로 발견되는 '개별' 손익계산서를 예비로 저장해 둡니다.
+ * 3. 모든 eleId를 확인한 후에도 '연결'이 없었으면 예비로 저장해 둔 '개별' 손익계산서를 반환합니다.
  */
 async function generateReportUrls(reportType, numbers) {
      const baseUrl = 'https://dart.fss.or.kr/report/viewer.do';
@@ -204,23 +208,25 @@ async function generateReportUrls(reportType, numbers) {
 
      if (reportType === 'PERIODIC') {
           const dtd = 'dart4.xsd';
+          const eleIdsToSearch = [21, 26, 19]; // 검색할 eleId 순서
+
+          // 차선책인 '개별' 보고서 정보를 저장할 변수
+          let individualReport = null;
+
+          // eleId를 순회하며 페이지 내용을 확인하는 내부 함수
           const checkEleId = async (eleId) => {
                const checkUrl = `${baseUrl}?rcpNo=${rcpNo}&dcmNo=${dcmNo}&eleId=${eleId}&offset=1234&length=1234&dtd=${dtd}`;
+               console.log(`Checking URL: ${checkUrl}`);
                const htmlContent = await getContentTextWithAutoCharset(
                     checkUrl
                );
                if (!htmlContent) return null;
+
                const $ = Cheerio.load(htmlContent);
-               const titleElements = $('p.section-2, p.table-group-xbrl');
-               let foundTitle = null;
-               titleElements.each((i, el) => {
-                    const titleText = $(el).text();
-                    if (/손익계산서/.test(titleText)) {
-                         foundTitle = titleText;
-                         return false;
-                    }
-               });
-               if (foundTitle) {
+               const titleElement = $('p:contains("손익계산서")').first();
+
+               if (titleElement.length > 0) {
+                    const foundTitle = titleElement.text();
                     const isConsolidated = foundTitle.includes('연결');
                     Logger.log(
                          ` -> eleId=${eleId}에서 제목['${foundTitle.trim()}']을 찾았습니다. [${
@@ -234,26 +240,47 @@ async function generateReportUrls(reportType, numbers) {
                }
                return null;
           };
-          let reportInfo = await checkEleId(21);
-          if (!reportInfo) {
-               Logger.log(
-                    ' -> eleId=21에서 포괄손익계산서 제목을 찾지 못했습니다. eleId=26으로 재시도합니다.'
-               );
-               reportInfo = await checkEleId(26);
-          }
-          if (!reportInfo) {
-               Logger.log(
-                    ' -> eleId=21, 26에서 포괄손익계산서 제목을 찾지 못했습니다. eleId=19으로 재시도합니다.'
-               );
-               reportInfo = await checkEleId(19);
-          }
-          if (!reportInfo) {
-               Logger.log(
-                    ' -> eleId 21과 26 모두에서 유효한 포괄손익계산서 제목을 찾지 못했습니다.'
-               );
+
+          // 지정된 eleId 목록을 순회
+          for (const eleId of eleIdsToSearch) {
+               const reportInfo = await checkEleId(eleId);
+
+               if (reportInfo) {
+                    // 1순위: '연결' 손익계산서를 찾은 경우 즉시 반환!
+                    if (reportInfo.statementType === '연결') {
+                         Logger.log(
+                              ` -> 최우선 대상인 '연결' 보고서를 eleId=${eleId}에서 찾았으므로 즉시 반환합니다.`
+                         );
+                         return reportInfo;
+                    }
+
+                    // 2순위: '개별' 손익계산서를 찾았고, 아직 저장된 차선책이 없는 경우
+                    if (!individualReport) {
+                         individualReport = reportInfo;
+                         Logger.log(
+                              ` -> 차선책인 '개별' 보고서를 eleId=${eleId}에서 찾았습니다. 계속해서 '연결'을 탐색합니다.`
+                         );
+                    }
+               }
+               await Utilities.sleep(500); // 요청 간에 1초 대기
           }
 
-          return reportInfo;
+          // for 루프가 모두 끝났다는 것은 '연결' 보고서를 찾지 못했다는 의미
+          // 저장된 차선책(individualReport)이 있으면 그것을 반환
+          if (individualReport) {
+               Logger.log(
+                    ` -> '연결' 보고서를 찾지 못해 차선책인 '개별' 보고서를 반환합니다.`
+               );
+               return individualReport;
+          }
+
+          // 여기까지 왔다면 어떤 손익계산서도 찾지 못한 것
+          Logger.log(
+               ` -> eleId ${eleIdsToSearch.join(
+                    ', '
+               )} 에서 유효한 손익계산서를 찾지 못했습니다.`
+          );
+          return null;
      }
 
      if (reportType === 'PRELIMINARY') {
@@ -262,73 +289,7 @@ async function generateReportUrls(reportType, numbers) {
                statementType: '잠정',
           };
      }
-     return null;
-}
 
-/**
- * ★★★ [복원 완료] 보고서 유형과 내용에 따라 분기 정보를 추출하는 헬퍼 함수 ★★★
- */
-function extractQuarterInfo(report, html) {
-     try {
-          const reportType = getReportType(report.report_nm);
-          const $ = Cheerio.load(html);
-          const bodyText = $('body').text().replace(/\s+/g, ' ');
-
-          if (reportType === 'PERIODIC') {
-               const dateMatch = bodyText.match(
-                    /(\d{4})\s*\.\s*(\d{2})\s*\.\s*(\d{2})\s*까지/
-               );
-               if (dateMatch) {
-                    const year = dateMatch[1].slice(-2);
-                    const month = parseInt(dateMatch[2], 10);
-                    const quarter = Math.ceil(month / 3);
-                    return `${quarter}Q${year}`;
-               }
-          }
-
-          if (reportType === 'PRELIMINARY') {
-               if (report.report_nm.includes('매출액또는손익구조30%')) {
-                    const year = parseInt(report.rcept_dt.substring(2, 4), 10);
-                    return `4Q${year - 1}`;
-               }
-               if (bodyText.match(/(\d{2,4}년\s*\d{1,2}월)|\(\d{4}\.\d{2}\)/)) {
-                    Logger.log(
-                         " -> '월별' 실적으로 판단되어 분석에서 제외합니다."
-                    );
-                    return 'monthly';
-               }
-
-               let quarterMatch = bodyText.match(/\((\d{2,4})\.?(\d{1,2})Q\)/);
-               if (!quarterMatch)
-                    quarterMatch = bodyText.match(
-                         /\('?(\d{2,4})년\s*(\d{1,2})분기\)/
-                    );
-               if (!quarterMatch)
-                    quarterMatch = bodyText.match(
-                         /\('?(\d{2,4})\.(\d{1,2})\/\d분기\)/
-                    );
-               Logger.log(`quarterMatch : ${quarterMatch}`);
-               if (quarterMatch) {
-                    const year = quarterMatch[1].slice(-2);
-                    const q = quarterMatch[2];
-                    return `${q}Q${year}`;
-               }
-
-               let yearMatch = bodyText.match(/(\d{4})년\s/);
-               if (!yearMatch)
-                    yearMatch = bodyText.match(
-                         /\((\d{4})\.\d{1,2}\.\d{1,2}~\d{4}\.\d{2}\.\d{2}\)/
-                    );
-               if (yearMatch) {
-                    const year = yearMatch[1].slice(-2);
-                    return `4Q${year}`;
-               }
-          }
-     } catch (e) {
-          Logger.log(` -> 분기 정보 추출 중 오류: ${e.toString()}`);
-     }
-
-     Logger.log(' -> 분기 정보를 찾을 수 없습니다.');
      return null;
 }
 
@@ -410,12 +371,13 @@ async function extractPeriodicEarnings(report, reportUrl) {
           netIncomeToControllingInterests: null,
      };
      const keywords = {
-          sales: /수익\(매출액\)|매출액|영업수익|^매출$/,
-          operatingProfit: /영업이익|영업손실|영업손익/,
+          sales: /(수익\(매출액\)|매출액|영업수익|매출)(\s*\(주(?:석)? [^)]+\))?/,
+          operatingProfit:
+               /(영업이익|영업손실|영업손익)(\s*\(주(?:석)? [^)]+\))?/,
           netIncome:
-               /당기순이익|반기순이익|분기순이익|당기순손실|반기순손실|분기순손실|반기순손익|분기순손익|당기순손익/,
+               /(당기순이익|반기순이익|분기순이익|당기순손실|반기순손실|분기순손실|반기순손익|분기순손익|당기순손익)(\s*\(주(?:석)? [^)]+\))?/,
           netIncomeToControllingInterests:
-               /지배(기업)?(주주)?지분|지배기업.*귀속/,
+               /(지배(기업)?(주주)?지분|지배기업.*귀속)(\s*\(주(?:석)? [^)]+\))?/,
      };
 
      $('tr').each((i, row) => {
@@ -543,9 +505,23 @@ async function extractPreliminaryEarnings(report, reportUrl) {
           };
           let found = false;
           for (const [key, keyword] of Object.entries(keywords)) {
-               const labelCell = $(`td:contains("${keyword}")`);
+               // 정규식 객체를 생성합니다.
+               // ^.*     : 문자열 시작부터 어떤 문자가 0번 이상 반복 (앞에 أي شيء 와도 됨)
+               // ${keyword} : 핵심 키워드 (예: '매출액')
+               // \s*     : 공백 문자가 0번 이상 반복 (뒤에 공백만 올 수 있음)
+               // $       : 문자열의 끝 (공백 뒤에 다른 문자가 오면 안 됨)
+               const regex = new RegExp(`^.*${keyword}\\s*$`);
+
+               // 모든 'td' 요소를 대상으로 filter를 실행합니다.
+               const labelCell = $('td').filter(function () {
+                    // 현재 td 요소의 텍스트를 가져와 정규식으로 테스트(test)합니다.
+                    // .trim()으로 양 끝의 불필요한 공백을 제거하여 정확도를 높입니다.
+                    return regex.test($(this).text().trim());
+               });
+
                if (labelCell.length > 0) {
                     const valueCell = labelCell.next('td');
+                    console.log(`valueCell : ${valueCell.text()}`);
                     if (valueCell.length > 0) {
                          const parsedValue = cleanAndParseNumber(
                               valueCell.text()
@@ -639,7 +615,7 @@ async function extractPreliminaryEarnings(report, reportUrl) {
                     isAnnual = true;
                } else {
                     // Case 2, 3: 분기 실적 판단
-                    console.log('cell1Text : ', cell1Text);
+                    // console.log('cell1Text : ', cell1Text);
 
                     // 먼저 yyyy.mm.dd ~ yyyy.mm.dd 형식 체크 (4자리 년도)
                     const dateRangeMatch = cell1Text.match(
@@ -776,8 +752,8 @@ async function fetchDisclosureList() {
           ).slice(-2)}`;
      // const endDate = formatDate(today);
      // const beginDate = formatDate(oneMonthAgo);
-     const endDate = '20250220';
-     const beginDate = '20250101';
+     const endDate = '20250801';
+     const beginDate = '20250701';
 
      const TARGET_COUNT = 100; // 원본 값으로 복원했습니다.
      const MAX_PAGES_TO_FETCH = 50;
@@ -825,6 +801,7 @@ async function fetchDisclosureList() {
                          collectedReports.length < TARGET_COUNT &&
                          ['Y', 'K'].includes(report.corp_cls) &&
                          !report.report_nm.includes('정정') &&
+                         !report.report_nm.includes('연장') &&
                          !report.report_nm.includes('첨부추가') &&
                          !report.report_nm.includes('자회사의 주요경영사항') &&
                          !report.corp_name.includes('스팩') // 스팩인 경우에는 제거
@@ -904,7 +881,7 @@ async function processSingleDisclosure(report) {
      Logger.log(
           ` -> 네이버 증권에서 과거 분기 실적 조회 시작... (유형: ${statementType})`
      );
-     const naverEarnings = await getNaverQuarterlyEarnings(
+     const naverEarnings = await getQuarterlyEarnings(
           report.stock_code,
           statementType
      );
@@ -1059,7 +1036,7 @@ async function runSequentialProcessing() {
                     await sendTelegramMessage(caption);
                }
 
-               await Utilities.sleep(200);
+               await Utilities.sleep(500);
           }
      } catch (e) {
           Logger.log(`error 발생 !! ${e.stack}`);
@@ -1218,6 +1195,6 @@ async function testSingleRcpNo_AutoDetect(rcpNo) {
 // 아래 함수들 중 실행하고 싶은 함수의 주석을 해제하세요.
 
 (async () => {
-     await testSingleRcpNo_AutoDetect('20250220900343');
-     // await runFullProcessAndLogResults();
+     // await testSingleRcpNo_AutoDetect('20250320001632');
+     await runFullProcessAndLogResults();
 })();
