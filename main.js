@@ -1,6 +1,7 @@
 const axios = require('axios');
 const iconv = require('iconv-lite');
 const { xml2js } = require('xml-js');
+const fs = require('fs'); // [추가] 파일 시스템 모듈
 
 // 호환성 레이어 및 다른 모듈에서 필요한 함수들을 불러옵니다.
 const {
@@ -9,7 +10,7 @@ const {
      Utilities,
      Cheerio,
 } = require('./gas-compatibility');
-const { getQuarterlyEarnings, getMarketCap } = require('./financial'); // [수정] getMarketCap 추가
+const { getQuarterlyEarnings, getMarketCap } = require('./financial');
 const { getNaverConsensus } = require('./consensus');
 const { calculate5QuarterEarnings } = require('./quarter');
 const {
@@ -25,19 +26,44 @@ const {
 } = require('./charts');
 
 // =================================================================
-// SECTION 1: 핵심 로직 헬퍼 함수 (변경 없음)
+// SECTION 0: [신규] 파일 I/O 헬퍼 함수
 // =================================================================
-/**
- * 특정 통화의 현재 원화(KRW) 환율을 가져옵니다.
- */
+
+const LAST_RCP_NO_FILE = 'last_rcp.txt';
+
+function getLastRcpNo() {
+     try {
+          if (fs.existsSync(LAST_RCP_NO_FILE)) {
+               const rcpNo = fs.readFileSync(LAST_RCP_NO_FILE, 'utf-8').trim();
+               return rcpNo || null;
+          }
+     } catch (e) {
+          Logger.log(
+               ` -> last_rcp.txt 파일 읽기 오류: ${e.message}. null을 반환합니다.`
+          );
+     }
+     return null;
+}
+
+function saveLastRcpNo(rcpNo) {
+     try {
+          fs.writeFileSync(LAST_RCP_NO_FILE, rcpNo, 'utf-8');
+          Logger.log(` -> 최신 접수번호 ${rcpNo} 저장 완료.`);
+     } catch (e) {
+          Logger.log(` -> last_rcp.txt 파일 저장 오류: ${e.message}`);
+     }
+}
+
+// =================================================================
+// SECTION 1: 핵심 로직 헬퍼 함수
+// =================================================================
+
 async function getExchangeRate(currencyCode) {
      const fallbackRates = { USD: 1380, CNY: 190, JPY: 9 };
      try {
           const url = `https://open.er-api.com/v6/latest/${currencyCode}`;
-          const response = await axios.get(url, {
-               validateStatus: () => true,
-          });
-          if (response.getResponseCode() === 200) {
+          const response = await axios.get(url, { validateStatus: () => true });
+          if (response.status === 200) {
                const data = response.data;
                const rate = data.rates.KRW;
                if (rate) {
@@ -61,20 +87,13 @@ async function getExchangeRate(currencyCode) {
      }
 }
 
-/**
- * URL을 받아 문서의 meta 태그를 분석하여 정확한 인코딩으로 텍스트를 반환합니다.
- */
-// 기존 함수를 아래 코드로 교체합니다.
 async function getContentTextWithAutoCharset(url) {
      try {
-          // 1. axios로 응답을 'arraybuffer' 형태로 받습니다. (가장 중요)
-          // 이렇게 해야 텍스트가 깨지지 않은 순수 바이트(byte) 데이터를 얻을 수 있습니다.
           const response = await axios.get(url, {
                responseType: 'arraybuffer',
-               validateStatus: () => true, // muteHttpExceptions: true 와 동일
+               validateStatus: () => true,
           });
 
-          // 2. HTTP 상태 코드를 확인합니다.
           if (response.status !== 200) {
                Logger.log(
                     ` -> URL fetch 실패 (코드: ${response.status}): ${url}`
@@ -82,16 +101,10 @@ async function getContentTextWithAutoCharset(url) {
                return null;
           }
 
-          // 3. 받은 ArrayBuffer를 Node.js의 Buffer 객체로 변환합니다.
           const responseBuffer = Buffer.from(response.data);
-
-          // 4. 인코딩 감지를 위해 먼저 'latin1'(ISO-8859-1)로 디코딩합니다.
           const rawContent = iconv.decode(responseBuffer, 'latin1');
-
-          // 5. meta 태그에서 charset을 찾습니다.
           const charsetMatch = rawContent.match(/<meta[^>]+charset=([^">]+)/i);
 
-          // 6. 'euc-kr'이 발견되면, 원본 버퍼를 'euc-kr'로 디코딩하여 반환합니다.
           if (
                charsetMatch &&
                charsetMatch[1].toLowerCase().includes('euc-kr')
@@ -99,16 +112,13 @@ async function getContentTextWithAutoCharset(url) {
                return iconv.decode(responseBuffer, 'euc-kr');
           }
 
-          // 7. 그렇지 않으면, 원본 버퍼를 기본값인 'utf-8'로 디코딩하여 반환합니다.
           return responseBuffer.toString('utf8');
      } catch (e) {
-          // 네트워크 오류 등 요청 자체의 실패를 처리합니다.
           Logger.log(` -> getContentTextWithAutoCharset 오류: ${e.message}`);
           return null;
      }
 }
 
-/** 보고서 이름을 분석하여 표준화된 유형을 반환합니다. */
 function getReportType(reportName) {
      if (
           reportName.includes('분기보고서') ||
@@ -125,38 +135,23 @@ function getReportType(reportName) {
      return null;
 }
 
-/** [하이브리드 함수] dcmNo, rcpNo를 추출합니다. */
-// 기존 함수를 아래 코드로 교체합니다.
 async function getDisclosureNumbers(rcpNo) {
-     // 1. XML API를 호출하여 파싱하는 내부 함수
      const fetchFromApi = async () => {
           try {
                const url = `https://dart.fss.or.kr/dtd/document.xml?rcpNo=${rcpNo}`;
-
-               // axios로 XML 데이터를 가져옵니다.
                const response = await axios.get(url, {
-                    validateStatus: () => true, // muteHttpExceptions: true
+                    validateStatus: () => true,
                });
-
                if (response.status !== 200) return null;
-
-               // xml-js로 텍스트를 자바스크립트 객체로 변환합니다.
-               // compact: false는 GAS의 XmlService와 유사한 구조를 만듭니다.
                const jsObject = xml2js(response.data, { compact: false });
-
-               // GAS의 XmlService.parse() 결과와 유사한 방식으로 값을 추출합니다.
-               const dcmNo = jsObject.elements[0].elements[0].attributes.DCM_NO; // RESULT // PART // { DCM_NO: '...' }
-
+               const dcmNo = jsObject.elements[0].elements[0].attributes.DCM_NO;
                return { rcpNo, dcmNo };
           } catch (e) {
-               // 파싱 오류 또는 네트워크 오류 처리
                Logger.log(` -> fetchFromApi 오류: ${e.message}`);
                return null;
           }
      };
 
-     // 2. HTML을 파싱하는 내부 함수 (이 부분은 변경 없음)
-     // 이미 getContentTextWithAutoCharset가 axios를 사용하도록 변환되었기 때문입니다.
      const fetchFromHtml = async () => {
           try {
                const html = await getContentTextWithAutoCharset(
@@ -178,7 +173,6 @@ async function getDisclosureNumbers(rcpNo) {
           }
      };
 
-     // 3. 메인 로직 (이 부분도 변경 없음)
      let numbers = await fetchFromApi();
      if (numbers) {
           Logger.log(` -> API 방식으로 번호 획득 성공.`);
@@ -194,32 +188,23 @@ async function getDisclosureNumbers(rcpNo) {
      return null;
 }
 
-/**
- * 보고서 유형을 받아 '올바른' 포괄손익계산서 URL 하나를 찾아서 반환합니다.
- */
 async function generateReportUrls(reportType, numbers) {
      const baseUrl = 'https://dart.fss.or.kr/report/viewer.do';
      const { rcpNo, dcmNo } = numbers;
 
      if (reportType === 'PERIODIC') {
           const dtd = 'dart4.xsd';
-          const eleIdsToSearch = [21, 26, 19]; // 검색할 eleId 순서
-
-          // 차선책인 '개별' 보고서 정보를 저장할 변수
+          const eleIdsToSearch = [21, 26, 19];
           let individualReport = null;
 
-          // eleId를 순회하며 페이지 내용을 확인하는 내부 함수
           const checkEleId = async (eleId) => {
                const checkUrl = `${baseUrl}?rcpNo=${rcpNo}&dcmNo=${dcmNo}&eleId=${eleId}&offset=1234&length=1234&dtd=${dtd}`;
-               console.log(`Checking URL: ${checkUrl}`);
                const htmlContent = await getContentTextWithAutoCharset(
                     checkUrl
                );
                if (!htmlContent) return null;
-
                const $ = Cheerio.load(htmlContent);
                const titleElement = $('p:contains("손익계산서")').first();
-
                if (titleElement.length > 0) {
                     const foundTitle = titleElement.text();
                     const isConsolidated = foundTitle.includes('연결');
@@ -236,32 +221,25 @@ async function generateReportUrls(reportType, numbers) {
                return null;
           };
 
-          // 지정된 eleId 목록을 순회
           for (const eleId of eleIdsToSearch) {
                const reportInfo = await checkEleId(eleId);
-
                if (reportInfo) {
-                    // 1순위: '연결' 손익계산서를 찾은 경우 즉시 반환!
                     if (reportInfo.statementType === '연결') {
                          Logger.log(
-                              ` -> 최우선 대상인 '연결' 보고서를 eleId=${eleId}에서 찾았으므로 즉시 반환합니다.`
+                              ` -> '연결' 보고서를 eleId=${eleId}에서 찾았으므로 즉시 반환합니다.`
                          );
                          return reportInfo;
                     }
-
-                    // 2순위: '개별' 손익계산서를 찾았고, 아직 저장된 차선책이 없는 경우
                     if (!individualReport) {
                          individualReport = reportInfo;
                          Logger.log(
-                              ` -> 차선책인 '개별' 보고서를 eleId=${eleId}에서 찾았습니다. 계속해서 '연결'을 탐색합니다.`
+                              ` -> '개별' 보고서를 eleId=${eleId}에서 찾았습니다. 계속해서 '연결'을 탐색합니다.`
                          );
                     }
                }
-               await Utilities.sleep(500); // 요청 간에 1초 대기
+               await Utilities.sleep(500);
           }
 
-          // for 루프가 모두 끝났다는 것은 '연결' 보고서를 찾지 못했다는 의미
-          // 저장된 차선책(individualReport)이 있으면 그것을 반환
           if (individualReport) {
                Logger.log(
                     ` -> '연결' 보고서를 찾지 못해 차선책인 '개별' 보고서를 반환합니다.`
@@ -269,7 +247,6 @@ async function generateReportUrls(reportType, numbers) {
                return individualReport;
           }
 
-          // 여기까지 왔다면 어떤 손익계산서도 찾지 못한 것
           Logger.log(
                ` -> eleId ${eleIdsToSearch.join(
                     ', '
@@ -288,8 +265,8 @@ async function generateReportUrls(reportType, numbers) {
      return null;
 }
 
-// --- [분리된 실적 추출 함수 1] ---
 async function extractPeriodicEarnings(report, reportUrl) {
+     // ... 이 함수는 변경되지 않았으므로 기존 코드를 그대로 사용합니다 ...
      const cleanAndParseNumber = (text) => {
           if (!text) return null;
           const cleaned = text
@@ -427,8 +404,8 @@ async function extractPeriodicEarnings(report, reportUrl) {
      };
 }
 
-// --- [분리된 실적 추출 함수 2] ---
 async function extractPreliminaryEarnings(report, reportUrl) {
+     // ... 이 함수는 변경되지 않았으므로 기존 코드를 그대로 사용합니다 ...
      const cleanAndParseNumber = (text) => {
           if (!text) return null;
           const cleaned = text
@@ -702,6 +679,10 @@ async function extractPreliminaryEarnings(report, reportUrl) {
 // =================================================================
 // SECTION 2: 메인 워크플로우 함수
 // =================================================================
+
+/**
+ * DART API에서 공시 목록을 가져오는 함수
+ */
 async function fetchDisclosureList() {
      const API_KEY =
           PropertiesService.getScriptProperties().getProperty('DART_API_KEY');
@@ -720,14 +701,24 @@ async function fetchDisclosureList() {
      const endDate = '20250801';
      const beginDate = '20250701';
 
-     const TARGET_COUNT = 100;
+     const lastRcpNo = getLastRcpNo();
+     Logger.log(
+          lastRcpNo
+               ? `마지막 처리된 접수번호: ${lastRcpNo}. 이후 공시만 가져옵니다.`
+               : '저장된 접수번호가 없습니다. 최신 공시부터 가져옵니다.'
+     );
+
+     const TARGET_COUNT = 10; // ★★★ 여기서 수집할 최대 개수를 설정합니다 ★★★
      const MAX_PAGES_TO_FETCH = 50;
      let collectedReports = [];
      let pageNo = 1;
      let totalPages = 1;
+     let stopCollecting = false;
 
      try {
+          // ★★★ [수정] while 루프 조건에 TARGET_COUNT 체크 추가 ★★★
           while (
+               !stopCollecting &&
                collectedReports.length < TARGET_COUNT &&
                pageNo <= totalPages &&
                pageNo <= MAX_PAGES_TO_FETCH
@@ -744,9 +735,7 @@ async function fetchDisclosureList() {
 
                if (result.status !== '000' || !result.list) {
                     if (result.status === '013') {
-                         Logger.log(
-                              'API: 해당 기간에 더 이상 조회된 공시가 없습니다.'
-                         );
+                         Logger.log('API: 조회된 공시가 없습니다.');
                          break;
                     }
                     Logger.log(`API 오류: ${result.message}`);
@@ -755,9 +744,25 @@ async function fetchDisclosureList() {
 
                totalPages = result.total_page;
 
-               result.list.forEach((report) => {
+               for (const report of result.list) {
+                    if (lastRcpNo && report.rcept_no === lastRcpNo) {
+                         Logger.log(
+                              ` -> 이전에 처리한 공시(${lastRcpNo})에 도달하여 수집을 중단합니다.`
+                         );
+                         stopCollecting = true;
+                         break;
+                    }
+
+                    // ★★★ [수정] 필터링된 공시를 추가하기 전에도 TARGET_COUNT를 확인 ★★★
+                    if (collectedReports.length >= TARGET_COUNT) {
+                         Logger.log(
+                              ` -> TARGET_COUNT(${TARGET_COUNT}개)에 도달하여 수집을 중단합니다.`
+                         );
+                         stopCollecting = true;
+                         break;
+                    }
+
                     if (
-                         collectedReports.length < TARGET_COUNT &&
                          ['Y', 'K'].includes(report.corp_cls) &&
                          !report.report_nm.includes('정정') &&
                          !report.report_nm.includes('연장') &&
@@ -770,14 +775,16 @@ async function fetchDisclosureList() {
                               collectedReports.push(report);
                          }
                     }
-               });
+               }
 
                pageNo++;
                await Utilities.sleep(100);
           }
 
-          Logger.log(`총 ${collectedReports.length}개의 유효 공시 수집 완료.`);
-          return collectedReports.slice(0, TARGET_COUNT);
+          Logger.log(`총 ${collectedReports.length}개의 신규 공시 수집 완료.`);
+
+          collectedReports.reverse();
+          return collectedReports;
      } catch (e) {
           Logger.log(`API 목록 조회 중 오류 발생: ${e.toString()}`);
           return null;
@@ -785,7 +792,7 @@ async function fetchDisclosureList() {
 }
 
 /**
- * ★★★ [수정] 단일 공시 처리 함수 (시가총액 조회 추가) ★★★
+ * 단일 공시 처리 함수
  */
 async function processSingleDisclosure(report) {
      Logger.log(
@@ -836,7 +843,6 @@ async function processSingleDisclosure(report) {
                ? reportInfo.statementType
                : extractedData.statementType;
 
-     // [수정] 시가총액 조회 로직 추가
      const marketCap = await getMarketCap(report.stock_code);
      await Utilities.sleep(200);
 
@@ -871,15 +877,13 @@ async function processSingleDisclosure(report) {
                quarterlyEarnings: dartQuarterlyData,
                statementType,
                unitMultiplier: extractedData.unitMultiplier,
-               marketCap, // 시가총액은 계속 전달
+               marketCap,
                error: errorMsg,
           };
      };
 
      if (!naverEarnings) {
-          Logger.log(
-               ' -> 네이버 증권 데이터 조회 실패. DART 실적만 반환합니다.'
-          );
+          Logger.log(' -> 과거 분기 데이터 조회 실패. DART 실적만 반환합니다.');
           return createDartOnlyResult('과거 분기 데이터 조회 실패');
      }
 
@@ -927,7 +931,7 @@ async function processSingleDisclosure(report) {
           unitMultiplier: extractedData.unitMultiplier,
           consensus: consensus,
           importanceScores: importanceScores,
-          marketCap: marketCap, // [수정] 최종 결과에 시가총액 추가
+          marketCap: marketCap,
      };
 }
 
@@ -940,75 +944,81 @@ async function runSequentialProcessing() {
           const reportsToProcess = await fetchDisclosureList();
 
           if (!reportsToProcess) {
-               Logger.log('테스트 실패: 공시 목록을 가져오는 데 실패했습니다.');
+               Logger.log('처리 실패: 공시 목록을 가져오는 데 실패했습니다.');
                await sendTelegramMessage(
                     '🚨 DART 공시 목록을 가져오는 데 실패했습니다.'
                );
                return;
           }
           if (reportsToProcess.length === 0) {
-               Logger.log('테스트 완료: 조건에 맞는 공시 없음');
+               Logger.log('처리 완료: 새로운 실적 공시가 없습니다.');
                return;
           }
 
           for (const [index, report] of reportsToProcess.entries()) {
                const result = await processSingleDisclosure(report);
+               const isSuccess = result && result.quarterlyEarnings;
+
                Logger.log(
                     `[개별 처리 완료 ${index + 1}/${reportsToProcess.length}] ${
                          report.corp_name
-                    } -> 결과: ${result.quarterlyEarnings ? '성공' : '실패'}`
+                    } -> 결과: ${isSuccess ? '성공' : '실패/건너뜀'}`
                );
 
-               const mediaBlobs = [];
+               if (isSuccess) {
+                    const mediaBlobs = [];
+                    Logger.log(' -> 차트 이미지 생성 시도...');
+                    const stockChart = await generateStockChartImage(
+                         result.stock_code,
+                         result.corp_name
+                    );
+                    if (stockChart) mediaBlobs.push(stockChart);
+                    const bandCharts = await generatePerPbrBandCharts(
+                         result.stock_code
+                    );
+                    if (bandCharts) {
+                         if (bandCharts.perChart)
+                              mediaBlobs.push(bandCharts.perChart);
+                         if (bandCharts.pbrChart)
+                              mediaBlobs.push(bandCharts.pbrChart);
+                    }
+                    const consensusCharts = await generateConsensusCharts(
+                         'A' + result.stock_code,
+                         new Date().getFullYear() + '12'
+                    );
+                    if (consensusCharts) {
+                         if (consensusCharts.revenueChart)
+                              mediaBlobs.push(consensusCharts.revenueChart);
+                         if (consensusCharts.opChart)
+                              mediaBlobs.push(consensusCharts.opChart);
+                    }
 
-               Logger.log(' -> 차트 이미지 생성 시도...');
-               const stockChart = await generateStockChartImage(
-                    result.stock_code,
-                    result.corp_name
-               );
-               if (stockChart) mediaBlobs.push(stockChart);
-               const bandCharts = await generatePerPbrBandCharts(
-                    result.stock_code
-               );
-               if (bandCharts) {
-                    if (bandCharts.perChart)
-                         mediaBlobs.push(bandCharts.perChart);
-                    if (bandCharts.pbrChart)
-                         mediaBlobs.push(bandCharts.pbrChart);
-               }
-               const consensusCharts = await generateConsensusCharts(
-                    'A' + result.stock_code,
-                    new Date().getFullYear() + '12'
-               );
-               if (consensusCharts) {
-                    if (consensusCharts.revenueChart)
-                         mediaBlobs.push(consensusCharts.revenueChart);
-                    if (consensusCharts.opChart)
-                         mediaBlobs.push(consensusCharts.opChart);
-               }
+                    const caption = createTelegramCaption(result);
 
-               const caption = createTelegramCaption(result);
+                    if (mediaBlobs.length > 0) {
+                         Logger.log(' -> 미디어를 텔레그램으로 전송합니다.');
+                         await sendTelegramMediaGroup(mediaBlobs, caption);
+                    } else {
+                         Logger.log(' -> 텍스트를 텔레그램으로 전송합니다.');
+                         await sendTelegramMessage(caption);
+                    }
 
-               if (mediaBlobs.length > 0) {
-                    Logger.log('미디어를 텔레그램으로 전송합니다.');
-                    await sendTelegramMediaGroup(mediaBlobs, caption);
-               } else {
-                    Logger.log('텍스트를 텔레그램으로 전송합니다.');
-                    await sendTelegramMessage(caption);
+                    saveLastRcpNo(result.rcept_no);
                }
 
                await Utilities.sleep(500);
           }
      } catch (e) {
-          Logger.log(`error 발생 !! ${e.stack}`);
+          Logger.log(`처리 중 심각한 오류 발생 !! ${e.stack}`);
      }
 
      Logger.log(`\n--- 전체 공시 순차 처리 완료 ---`);
 }
 
 // =================================================================
-// SECTION 3: 테스트 실행 함수 (변경 없음)
+// SECTION 3: 테스트 실행 함수
 // =================================================================
+// (이 섹션의 코드는 변경 사항이 없습니다. 기존 코드 그대로 유지)
 
 function getUnitText(multiplier) {
      if (multiplier === 1000) return '천원';
@@ -1145,5 +1155,6 @@ async function testSingleRcpNo_AutoDetect(rcpNo) {
 // SECTION 4: 스크립트 실행
 // =================================================================
 (async () => {
+     // await testSingleRcpNo_AutoDetect("000020")
      await runFullProcessAndLogResults();
 })();
