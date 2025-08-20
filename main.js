@@ -9,14 +9,14 @@ const {
      Utilities,
      Cheerio,
 } = require('./gas-compatibility');
-const { getQuarterlyEarnings } = require('./financial');
+const { getQuarterlyEarnings, getMarketCap } = require('./financial'); // [수정] getMarketCap 추가
 const { getNaverConsensus } = require('./consensus');
 const { calculate5QuarterEarnings } = require('./quarter');
 const {
      createTelegramCaption,
      sendTelegramMessage,
      sendTelegramMediaGroup,
-     calculateImportanceScore, // [추가] 중요도 계산 함수 임포트
+     calculateImportanceScore,
 } = require('./helper');
 const {
      generateStockChartImage,
@@ -25,9 +25,8 @@ const {
 } = require('./charts');
 
 // =================================================================
-// SECTION 1: 핵심 로직 헬퍼 함수
+// SECTION 1: 핵심 로직 헬퍼 함수 (변경 없음)
 // =================================================================
-// (이 섹션의 코드는 변경 사항이 없습니다. 기존 코드 그대로 유지)
 /**
  * 특정 통화의 현재 원화(KRW) 환율을 가져옵니다.
  */
@@ -197,10 +196,6 @@ async function getDisclosureNumbers(rcpNo) {
 
 /**
  * 보고서 유형을 받아 '올바른' 포괄손익계산서 URL 하나를 찾아서 반환합니다.
- * 우선순위:
- * 1. eleId 16, 21, 29 순서로 '연결' 손익계산서를 찾습니다. 발견 즉시 함수를 종료하고 해당 값을 반환합니다.
- * 2. '연결'을 못 찾으면, 루프를 계속 돌며 첫 번째로 발견되는 '개별' 손익계산서를 예비로 저장해 둡니다.
- * 3. 모든 eleId를 확인한 후에도 '연결'이 없었으면 예비로 저장해 둔 '개별' 손익계산서를 반환합니다.
  */
 async function generateReportUrls(reportType, numbers) {
      const baseUrl = 'https://dart.fss.or.kr/report/viewer.do';
@@ -406,7 +401,7 @@ async function extractPeriodicEarnings(report, reportUrl) {
 
      let quarter = null,
           isAnnual = false;
-     const bodyText = $('body').text(); // ★★★ 누락되었던 변수 선언 ★★★
+     const bodyText = $('body').text();
      const dateMatch = bodyText.match(
           /(\d{4})\s*\.\s*(\d{2})\s*\.\s*(\d{2})\s*까지/
      );
@@ -433,9 +428,6 @@ async function extractPeriodicEarnings(report, reportUrl) {
 }
 
 // --- [분리된 실적 추출 함수 2] ---
-/**
- * ★★★ [수정 완료] 잠정실적 보고서의 실적, 분기/연간/월별 여부, 연결/개별 여부를 추출합니다. ★★★
- */
 async function extractPreliminaryEarnings(report, reportUrl) {
      const cleanAndParseNumber = (text) => {
           if (!text) return null;
@@ -457,7 +449,6 @@ async function extractPreliminaryEarnings(report, reportUrl) {
 
                let multiplier = 1;
 
-               // 1. 금액 단위 확인
                if (unitText.includes('천원') || unitText.includes('천'))
                     multiplier = 1000;
                else if (
@@ -470,7 +461,6 @@ async function extractPreliminaryEarnings(report, reportUrl) {
                else if (unitText.includes('조원') || unitText.includes('조'))
                     multiplier = 1000000000000;
 
-               // 2. 통화 단위 확인 후 곱하기
                if (unitText.includes('USD'))
                     multiplier *= await getExchangeRate('USD');
                else if (unitText.includes('CNY'))
@@ -505,17 +495,9 @@ async function extractPreliminaryEarnings(report, reportUrl) {
           };
           let found = false;
           for (const [key, keyword] of Object.entries(keywords)) {
-               // 정규식 객체를 생성합니다.
-               // ^.*     : 문자열 시작부터 어떤 문자가 0번 이상 반복 (앞에 أي شيء 와도 됨)
-               // ${keyword} : 핵심 키워드 (예: '매출액')
-               // \s*     : 공백 문자가 0번 이상 반복 (뒤에 공백만 올 수 있음)
-               // $       : 문자열의 끝 (공백 뒤에 다른 문자가 오면 안 됨)
                const regex = new RegExp(`^.*${keyword}\\s*$`);
 
-               // 모든 'td' 요소를 대상으로 filter를 실행합니다.
                const labelCell = $('td').filter(function () {
-                    // 현재 td 요소의 텍스트를 가져와 정규식으로 테스트(test)합니다.
-                    // .trim()으로 양 끝의 불필요한 공백을 제거하여 정확도를 높입니다.
                     return regex.test($(this).text().trim());
                });
 
@@ -584,15 +566,12 @@ async function extractPreliminaryEarnings(report, reportUrl) {
      let quarter = null;
      let isAnnual = false;
 
-     // '구분' 셀이 포함된 행의 다음 행을 분석 대상으로 삼음
      const headerRow = $('td:contains("구분")').closest('tr');
      const dataRow = headerRow.next('tr');
 
      if (dataRow.length > 0) {
           const cell1Text = dataRow.find('td').eq(0).text().replace(/\s+/g, '');
           const cell2Text = dataRow.find('td').eq(1).text().replace(/\s+/g, '');
-
-          // Case 4, 5: 월별 실적 판단 (최우선)
           const monthPattern = /(\d{2,4})년(\d{1,2})월/;
           if (
                monthPattern.test(cell1Text) ||
@@ -602,7 +581,6 @@ async function extractPreliminaryEarnings(report, reportUrl) {
           ) {
                quarter = 'monthly';
           } else {
-               // Case 1: 연간 실적 판단
                const yearPattern = /(\d{4})년(?!\s*\d+[분기Q])/;
                const annualDatePattern =
                     /(\d{4})\.01\.01\s*~\s*(\d{4})\.12\.31/;
@@ -614,14 +592,9 @@ async function extractPreliminaryEarnings(report, reportUrl) {
                     quarter = `4Q${yearMatch[1].slice(-2)}`;
                     isAnnual = true;
                } else {
-                    // Case 2, 3: 분기 실적 판단
-                    // console.log('cell1Text : ', cell1Text);
-
-                    // 먼저 yyyy.mm.dd ~ yyyy.mm.dd 형식 체크 (4자리 년도)
                     const dateRangeMatch = cell1Text.match(
                          /(\d{4})\.(\d{1,2})\.\d{1,2}~/
                     );
-                    // 2자리 년도 날짜 범위도 체크 (yy.mm~yy.mm 형식)
                     const shortDateRangeMatch =
                          cell1Text.match(/(\d{2})\.(\d{1,2})~/);
 
@@ -636,63 +609,58 @@ async function extractPreliminaryEarnings(report, reportUrl) {
                     } else {
                          let quarterMatch = cell1Text.match(
                               /'?(\d{2,4})\.(\d)[Q분기]/
-                         ); // 25.2Q, 25.2분기, '25.2Q, '25.2분기 (점이 있는 경우만)
+                         );
                          if (!quarterMatch)
                               quarterMatch =
-                                   cell1Text.match(/'?(\d{2})(\d)[Q분기]/); // '252Q, '252분기
+                                   cell1Text.match(/'?(\d{2})(\d)[Q분기]/);
                          if (!quarterMatch)
                               quarterMatch =
-                                   cell1Text.match(/(\d{4})(\d)[Q분기]/); // 20254Q, 20254분기 (점 없는 4자리년도+분기)
+                                   cell1Text.match(/(\d{4})(\d)[Q분기]/);
                          if (!quarterMatch)
                               quarterMatch = cell1Text.match(
                                    /'?(\d{2})년\s*(\d)[Q분기]/
-                              ); // '25년 2Q, 25년2분기
+                              );
                          if (!quarterMatch)
                               quarterMatch =
-                                   cell1Text.match(/(\d{4})년\s*(\d)[Q분기]/); // 2025년 2Q, 2025년2분기
+                                   cell1Text.match(/(\d{4})년\s*(\d)[Q분기]/);
                          if (!quarterMatch)
-                              quarterMatch = cell1Text.match(/(\d{2,4})-(\d)Q/); // 2025-2Q
-                         if (!quarterMatch)
-                              quarterMatch =
-                                   cell1Text.match(/(\d)[Q](\d{2,4})/); // 2Q25
+                              quarterMatch = cell1Text.match(/(\d{2,4})-(\d)Q/);
                          if (!quarterMatch)
                               quarterMatch =
-                                   cell1Text.match(/(\d{2})Y\s*[Q](\d)/); // 25Y Q2
+                                   cell1Text.match(/(\d)[Q](\d{2,4})/);
                          if (!quarterMatch)
                               quarterMatch =
-                                   cell1Text.match(/(\d{2})\.(\d{2})~/); // 25.04~25.06
+                                   cell1Text.match(/(\d{2})Y\s*[Q](\d)/);
                          if (!quarterMatch)
                               quarterMatch =
-                                   cell1Text.match(/'?(\d{2,4})\.Q(\d)/); // '25.Q2, 2025.Q4
+                                   cell1Text.match(/(\d{2})\.(\d{2})~/);
+                         if (!quarterMatch)
+                              quarterMatch =
+                                   cell1Text.match(/'?(\d{2,4})\.Q(\d)/);
                          if (!quarterMatch)
                               quarterMatch = cell1Text.match(
                                    /'?(\d{2,4})\.(\d{1,2})\/\d분기/
-                              ); // 기존 패턴
+                              );
 
                          console.log(quarterMatch, cell1Text);
 
                          if (quarterMatch) {
-                              // 패턴별로 다른 처리
                               if (
                                    cell1Text.includes('Y Q') ||
                                    cell1Text.includes('YQ')
                               ) {
-                                   // 25Y Q2 → 2Q25
                                    quarter = `${quarterMatch[2]}Q${quarterMatch[1]}`;
                               } else if (cell1Text.match(/\d[Q]\d{2,4}/)) {
-                                   // 2Q25 → 2Q25
                                    quarter = `${
                                         quarterMatch[1]
                                    }Q${quarterMatch[2].slice(-2)}`;
                               } else if (cell1Text.includes('~')) {
-                                   // 25.04~25.06 → 월로 분기 계산
                                    const month = parseInt(quarterMatch[2], 10);
                                    const q = Math.ceil(month / 3);
                                    quarter = `${q}Q${quarterMatch[1].slice(
                                         -2
                                    )}`;
                               } else {
-                                   // 일반적인 경우: 25.2Q, 25.2분기, 2025-2Q, 2025년 2Q 등
                                    quarter = `${
                                         quarterMatch[2]
                                    }Q${quarterMatch[1].slice(-2)}`;
@@ -703,7 +671,6 @@ async function extractPreliminaryEarnings(report, reportUrl) {
           }
      }
 
-     // Fallback: 손익구조 30%는 연간으로 간주
      if (!quarter && report.report_nm.includes('매출액또는손익구조30%')) {
           const year = parseInt(report.rcept_dt.substring(2, 4), 10);
           quarter = `4Q${year - 1}`;
@@ -750,12 +717,10 @@ async function fetchDisclosureList() {
           `${date.getFullYear()}${('0' + (date.getMonth() + 1)).slice(-2)}${(
                '0' + date.getDate()
           ).slice(-2)}`;
-     // const endDate = formatDate(today);
-     // const beginDate = formatDate(oneMonthAgo);
      const endDate = '20250801';
      const beginDate = '20250701';
 
-     const TARGET_COUNT = 100; // 원본 값으로 복원했습니다.
+     const TARGET_COUNT = 100;
      const MAX_PAGES_TO_FETCH = 50;
      let collectedReports = [];
      let pageNo = 1;
@@ -820,7 +785,7 @@ async function fetchDisclosureList() {
 }
 
 /**
- * ★★★ [수정 완료] 단일 공시 정보를 받아 처리하며, 연간 실적 변환 전 데이터 유효성을 검사합니다. ★★★
+ * ★★★ [수정] 단일 공시 처리 함수 (시가총액 조회 추가) ★★★
  */
 async function processSingleDisclosure(report) {
      Logger.log(
@@ -871,9 +836,11 @@ async function processSingleDisclosure(report) {
                ? reportInfo.statementType
                : extractedData.statementType;
 
-     Logger.log(
-          ` -> 네이버 증권에서 과거 분기 실적 조회 시작... (유형: ${statementType})`
-     );
+     // [수정] 시가총액 조회 로직 추가
+     const marketCap = await getMarketCap(report.stock_code);
+     await Utilities.sleep(200);
+
+     Logger.log(` -> 과거 분기 실적 조회 시작... (유형: ${statementType})`);
      const naverEarnings = await getQuarterlyEarnings(
           report.stock_code,
           statementType
@@ -904,6 +871,7 @@ async function processSingleDisclosure(report) {
                quarterlyEarnings: dartQuarterlyData,
                statementType,
                unitMultiplier: extractedData.unitMultiplier,
+               marketCap, // 시가총액은 계속 전달
                error: errorMsg,
           };
      };
@@ -931,9 +899,7 @@ async function processSingleDisclosure(report) {
 
           if (!hasAllPreviousQuarters) {
                Logger.log(
-                    ` -> 이전 분기 데이터 부족으로 4분기 실적 계산을 건너뜁니다. (필요: 1Q${year}, 2Q${year}, 3Q${year} / 확인: ${[
-                         ...quartersInYear,
-                    ].join(', ')})`
+                    ` -> 이전 분기 데이터 부족으로 4분기 실적 계산을 건너뜁니다.`
                );
                return createDartOnlyResult(
                     '4분기 계산을 위한 이전 분기 데이터 부족'
@@ -947,7 +913,6 @@ async function processSingleDisclosure(report) {
           naverEarnings
      );
 
-     // [추가] 중요도 점수 계산
      Logger.log(' -> 실적 중요도 점수 계산...');
      const importanceScores = calculateImportanceScore(
           final5QuartersData,
@@ -961,12 +926,13 @@ async function processSingleDisclosure(report) {
           quarterlyEarnings: final5QuartersData,
           unitMultiplier: extractedData.unitMultiplier,
           consensus: consensus,
-          importanceScores: importanceScores, // [추가] 최종 결과에 중요도 점수 추가
+          importanceScores: importanceScores,
+          marketCap: marketCap, // [수정] 최종 결과에 시가총액 추가
      };
 }
 
 /**
- * ★★★ [수정 완료] 메인 워크플로우 함수. Markdown 캡션에 최신 공시 실적 요약을 추가합니다. ★★★
+ * 메인 워크플로우 함수
  */
 async function runSequentialProcessing() {
      try {
@@ -1041,9 +1007,8 @@ async function runSequentialProcessing() {
 }
 
 // =================================================================
-// SECTION 3: 테스트 실행 함수
+// SECTION 3: 테스트 실행 함수 (변경 없음)
 // =================================================================
-// (이 섹션의 코드는 변경 사항이 없습니다. 기존 코드 그대로 유지)
 
 function getUnitText(multiplier) {
      if (multiplier === 1000) return '천원';
@@ -1067,7 +1032,6 @@ function logPrettySingleResult(report, index, total) {
           const unitText = getUnitText(report.unitMultiplier || 1);
 
           output += `📑 재무제표: ${report.statementType} (${latestQuarterInfo.quarter})\n`;
-          // output += `✅ 실적 추출 및 통합 성공 (단위: ${unitText})\n`;
           output += `-------------------------------------\n`;
 
           const earningsByQuarter = report.quarterlyEarnings.reduce(
@@ -1081,7 +1045,6 @@ function logPrettySingleResult(report, index, total) {
 
           for (const quarter in earningsByQuarter) {
                const qEarnings = earningsByQuarter[quarter];
-               // 이미 억원 단위로 계산되어 있음
                output += `  [${quarter}] 매출:${formatNumberWithCommas(
                     qEarnings.sales
                )} / 영익:${formatNumberWithCommas(
@@ -1100,7 +1063,6 @@ function logPrettySingleResult(report, index, total) {
 
 function formatNumberWithCommas(num) {
      if (num === null || num === undefined) return 'N/A';
-     // 소수점 3자리까지 표시
      return num.toLocaleString('ko-KR', {
           minimumFractionDigits: 0,
           maximumFractionDigits: 0,
@@ -1112,10 +1074,6 @@ async function runFullProcessAndLogResults() {
 }
 
 async function testSingleRcpNo_AutoDetect(rcpNo) {
-     // ... (rcpNo 목록은 원본과 동일)
-     // const rcpNo = '20250813001607'; // 효성화학 25년 2분기 보고서
-     // const rcpNo = '20250812900500' // 아이크래프트 잠정실적
-     // const rcpNo = '20250731800044'; // 키움증권 25년 2분기 보고서
      Logger.log(`--- 단일 접수번호(${rcpNo}) 자동 감지 테스트 시작 ---`);
 
      const mainPageUrl = `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rcpNo}`;
@@ -1173,7 +1131,6 @@ async function testSingleRcpNo_AutoDetect(rcpNo) {
 
      if (extractedData && extractedData.earnings) {
           Logger.log('\n--- ✅ 추출 성공 ---');
-          // Logger.log(`분기 정보: ${extractedData.quarter}`);
           Logger.log(JSON.stringify(extractedData, null, 2));
      } else {
           Logger.log('\n--- ❌ 추출 실패 ---');
@@ -1188,6 +1145,5 @@ async function testSingleRcpNo_AutoDetect(rcpNo) {
 // SECTION 4: 스크립트 실행
 // =================================================================
 (async () => {
-     // await testSingleRcpNo_AutoDetect('20250320001632');
      await runFullProcessAndLogResults();
 })();

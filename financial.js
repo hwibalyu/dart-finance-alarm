@@ -192,9 +192,9 @@ async function testGetMarketCap() {
      Logger.log('--- 시가총액 조회 함수 테스트 종료 ---');
 }
 
-(async () => {
-     await testGetMarketCap();
-})();
+// (async () => {
+//      await testGetMarketCap();
+// })();
 
 module.exports = {
      getQuarterlyEarnings,

@@ -56,18 +56,11 @@ function formatEarningsWithConsensus(
 // SECTION: 중요도 계산 함수
 // =================================================================
 
-/**
- * Legacy Code 기반의 실적 중요도 점수 계산 함수
- * @param {Array} quarterlyEarnings - 5분기 실적 데이터 배열
- * @param {Object} consensus - 컨센서스 데이터 객체
- * @returns {Object} - { sales: 점수, operatingProfit: 점수, netIncome: 점수 }
- */
 function calculateImportanceScore(quarterlyEarnings, consensus) {
      if (!quarterlyEarnings || quarterlyEarnings.length === 0) {
           return { sales: 0, operatingProfit: 0, netIncome: 0 };
      }
 
-     // 1. 데이터 구조화
      const structuredData = {
           sales: { actual: null, forecast: null, yoy: null, qoq: null },
           operatingProfit: {
@@ -87,9 +80,7 @@ function calculateImportanceScore(quarterlyEarnings, consensus) {
      const qoqQuarterStr = `${qoqQ}Q${qoqY}`;
      const yoyQuarterStr = `${latestQ}Q${latestY - 1}`;
 
-     // quarterlyEarnings 배열을 순회하며 데이터 채우기
      for (const earning of quarterlyEarnings) {
-          // ★★★ [수정] structuredData에 해당 item 키가 존재하는지 먼저 확인 ★★★
           if (structuredData[earning.item]) {
                if (earning.quarter === latestQuarterStr) {
                     structuredData[earning.item].actual = earning.value;
@@ -101,14 +92,12 @@ function calculateImportanceScore(quarterlyEarnings, consensus) {
           }
      }
 
-     // 컨센서스 데이터 채우기
      if (consensus) {
           structuredData.sales.forecast = consensus.sales;
           structuredData.operatingProfit.forecast = consensus.operatingProfit;
           structuredData.netIncome.forecast = consensus.netIncome;
      }
 
-     // 2. 중요도 점수 계산 (Legacy Code 로직)
      const importance = { sales: 0, operatingProfit: 0, netIncome: 0 };
      const factors = ['forecast', 'yoy', 'qoq'];
 
@@ -178,9 +167,16 @@ function calculateImportanceScore(quarterlyEarnings, consensus) {
 // SECTION: 텔레그램 메시지 생성 및 전송 함수
 // =================================================================
 
+/**
+ * ★★★ [수정] 텔레그램 캡션 생성 함수 (시가총액, PER/POR 추가) ★★★
+ */
 function createTelegramCaption(result) {
-     let caption = `🏢 *${result.corp_name} (${result.stock_code})*\n`;
-     caption += `[${result.report_nm.trim()}](${`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${result.rcept_no}`})\n\n`;
+     // 1. 헤더 생성 (시가총액 포함)
+     let caption = `🏢 *${result.corp_name}`;
+     if (result.marketCap) {
+          caption += ` (${result.marketCap.toLocaleString('ko-KR')}억)`;
+     }
+     caption += `*\n[${result.report_nm.trim()}](${`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${result.rcept_no}`})\n\n`;
 
      if (result.quarterlyEarnings && result.quarterlyEarnings.length > 0) {
           const earningsByQuarter = result.quarterlyEarnings.reduce(
@@ -202,13 +198,13 @@ function createTelegramCaption(result) {
           };
           const icons = { 5: '🔥', 6: '🚨' };
 
-          // 중요도가 0 이하인 경우 빈 문자열 반환
           const getImportanceText = (score) => {
                if (score <= 0) return '';
                const icon = icons[score] || '';
                return `  ${icon}중요${score}`;
           };
 
+          // 2. 최신 실적 요약 생성
           if (latestEarnings) {
                caption +=
                     formatEarningsWithConsensus(
@@ -230,10 +226,65 @@ function createTelegramCaption(result) {
                          latestEarnings.netIncome,
                          consensus ? consensus.netIncome : null,
                          getImportanceText(scores.netIncome)
-                    ) + '\n\n';
+                    ) + '\n';
           }
 
-          caption += '------------------------------------\n';
+          // 3. PER/POR 지표 계산 및 추가
+          const marketCap = result.marketCap;
+          if (marketCap) {
+               let metricsCaption = '\n';
+               const uniqueQuarters = [
+                    ...new Set(result.quarterlyEarnings.map((d) => d.quarter)),
+               ];
+               const hasFourQuarters = uniqueQuarters.length >= 4;
+
+               // 연간 지표 계산
+               let lastFourQuartersOpSum = 0;
+               let lastFourQuartersNetSum = 0;
+               if (hasFourQuarters) {
+                    const fourQuarters = uniqueQuarters.slice(0, 4);
+                    for (const q of fourQuarters) {
+                         lastFourQuartersOpSum +=
+                              earningsByQuarter[q]?.operatingProfit || 0;
+                         lastFourQuartersNetSum +=
+                              earningsByQuarter[q]?.netIncome || 0;
+                    }
+               }
+
+               const annualPER =
+                    hasFourQuarters && lastFourQuartersNetSum > 0
+                         ? (marketCap / lastFourQuartersNetSum).toFixed(1)
+                         : '-';
+               const annualPOR =
+                    hasFourQuarters && lastFourQuartersOpSum > 0
+                         ? (marketCap / lastFourQuartersOpSum).toFixed(1)
+                         : '-';
+
+               // 분기 지표 계산
+               const quarterPER =
+                    latestEarnings.netIncome > 0
+                         ? (marketCap / (latestEarnings.netIncome * 4)).toFixed(
+                                1
+                           )
+                         : '-';
+               const quarterPOR =
+                    latestEarnings.operatingProfit > 0
+                         ? (
+                                marketCap /
+                                (latestEarnings.operatingProfit * 4)
+                           ).toFixed(1)
+                         : '-';
+
+               metricsCaption += `✦ 연간PER : ${annualPER}\n`;
+               metricsCaption += `✦ 분기PER : ${quarterPER}\n`;
+               metricsCaption += `✦ 연간POR : ${annualPOR}\n`;
+               metricsCaption += `✦ 분기POR : ${quarterPOR}\n`;
+
+               caption += metricsCaption;
+          }
+
+          // 4. 과거 실적 테이블 생성
+          caption += '\n------------------------------------\n';
           caption += '`[분기]` `매출` `영업` `순익` (억원)\n';
 
           for (const quarter in earningsByQuarter) {
