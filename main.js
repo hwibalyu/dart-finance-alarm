@@ -147,7 +147,7 @@ async function getDisclosureNumbers(rcpNo) {
                const dcmNo = jsObject.elements[0].elements[0].attributes.DCM_NO;
                return { rcpNo, dcmNo };
           } catch (e) {
-               Logger.log(` -> fetchFromApi 오류: ${e.message}`);
+               // Logger.log(` -> fetchFromApi 오류: ${e.message}`);
                return null;
           }
      };
@@ -172,13 +172,13 @@ async function getDisclosureNumbers(rcpNo) {
                return null;
           }
      };
-
-     let numbers = await fetchFromApi();
-     if (numbers) {
-          Logger.log(` -> API 방식으로 번호 획득 성공.`);
-          return numbers;
-     }
-     Logger.log(` -> API 방식 실패. HTML 파싱으로 재시도...`);
+     let numbers;
+     // let numbers = await fetchFromApi();
+     // if (numbers) {
+     //      Logger.log(` -> API 방식으로 번호 획득 성공.`);
+     //      return numbers;
+     // }
+     // Logger.log(` -> API 방식 실패. HTML 파싱으로 재시도...`);
      numbers = await fetchFromHtml();
      if (numbers) {
           Logger.log(` -> HTML 파싱 방식으로 번호 획득 성공.`);
@@ -208,11 +208,11 @@ async function generateReportUrls(reportType, numbers) {
                if (titleElement.length > 0) {
                     const foundTitle = titleElement.text();
                     const isConsolidated = foundTitle.includes('연결');
-                    Logger.log(
-                         ` -> eleId=${eleId}에서 제목['${foundTitle.trim()}']을 찾았습니다. [${
-                              isConsolidated ? '연결' : '개별'
-                         }]`
-                    );
+                    // Logger.log(
+                    //      ` -> eleId=${eleId}에서 제목['${foundTitle.trim()}']을 찾았습니다. [${
+                    //           isConsolidated ? '연결' : '개별'
+                    //      }]`
+                    // );
                     return {
                          finalUrl: checkUrl,
                          statementType: isConsolidated ? '연결' : '개별',
@@ -225,16 +225,16 @@ async function generateReportUrls(reportType, numbers) {
                const reportInfo = await checkEleId(eleId);
                if (reportInfo) {
                     if (reportInfo.statementType === '연결') {
-                         Logger.log(
-                              ` -> '연결' 보고서를 eleId=${eleId}에서 찾았으므로 즉시 반환합니다.`
-                         );
+                         // Logger.log(
+                         //      ` -> '연결' 보고서를 eleId=${eleId}에서 찾았으므로 즉시 반환합니다.`
+                         // );
                          return reportInfo;
                     }
                     if (!individualReport) {
                          individualReport = reportInfo;
-                         Logger.log(
-                              ` -> '개별' 보고서를 eleId=${eleId}에서 찾았습니다. 계속해서 '연결'을 탐색합니다.`
-                         );
+                         // Logger.log(
+                         //      ` -> '개별' 보고서를 eleId=${eleId}에서 찾았습니다. 계속해서 '연결'을 탐색합니다.`
+                         // );
                     }
                }
                await Utilities.sleep(500);
@@ -464,7 +464,7 @@ async function extractPreliminaryEarnings(report, reportUrl) {
      };
 
      const parserB = () => {
-          Logger.log(' -> Parser B (손익구조30%) 실행...');
+          // Logger.log(' -> Parser B (손익구조30%) 실행...');
           const keywords = {
                sales: '매출액',
                operatingProfit: '영업이익',
@@ -480,7 +480,7 @@ async function extractPreliminaryEarnings(report, reportUrl) {
 
                if (labelCell.length > 0) {
                     const valueCell = labelCell.next('td');
-                    console.log(`valueCell : ${valueCell.text()}`);
+                    // console.log(`valueCell : ${valueCell.text()}`);
                     if (valueCell.length > 0) {
                          const parsedValue = cleanAndParseNumber(
                               valueCell.text()
@@ -497,7 +497,7 @@ async function extractPreliminaryEarnings(report, reportUrl) {
      };
 
      const parserA = () => {
-          Logger.log(' -> Parser A (기존 잠정실적) 실행...');
+          // Logger.log(' -> Parser A (기존 잠정실적) 실행...');
           const keywords = {
                sales: '매출액',
                operatingProfit: '영업이익',
@@ -539,7 +539,7 @@ async function extractPreliminaryEarnings(report, reportUrl) {
      } else {
           result = parserA();
      }
-     Logger.log(result);
+     // Logger.log(result);
      let quarter = null;
      let isAnnual = false;
 
@@ -665,7 +665,7 @@ async function extractPreliminaryEarnings(report, reportUrl) {
                statementType = '연결';
           }
      }
-     Logger.log(isAnnual, quarter);
+     // Logger.log(isAnnual, quarter);
 
      return {
           earnings: result,
@@ -679,6 +679,48 @@ async function extractPreliminaryEarnings(report, reportUrl) {
 // =================================================================
 // SECTION 2: 메인 워크플로우 함수
 // =================================================================
+
+/**
+ * ★★★ [신규] DART API에서 가장 최신 공시 1건의 접수번호만 가져오는 함수 ★★★
+ */
+async function fetchLatestRcpNo() {
+     const API_KEY =
+          PropertiesService.getScriptProperties().getProperty('DART_API_KEY');
+     if (!API_KEY) {
+          Logger.log('API 키가 설정되지 않았습니다.');
+          return null;
+     }
+     const today = new Date();
+     const endDate = `${today.getFullYear()}${(
+          '0' +
+          (today.getMonth() + 1)
+     ).slice(-2)}${('0' + today.getDate()).slice(-2)}`;
+
+     const apiUrl = `https://opendart.fss.or.kr/api/list.json?crtfc_key=${API_KEY}&end_de=${endDate}&page_count=1&page_no=1`;
+
+     try {
+          const response = await axios.get(apiUrl, {
+               validateStatus: () => true,
+          });
+          const result = response.data;
+
+          if (
+               result.status === '000' &&
+               result.list &&
+               result.list.length > 0
+          ) {
+               return result.list[0].rcept_no;
+          } else {
+               Logger.log(`최신 공시 번호 조회 API 오류: ${result.message}`);
+               return null;
+          }
+     } catch (e) {
+          Logger.log(
+               `최신 공시 번호 조회 중 네트워크 오류 발생: ${e.toString()}`
+          );
+          return null;
+     }
+}
 
 /**
  * DART API에서 공시 목록을 가져오는 함수
@@ -698,8 +740,13 @@ async function fetchDisclosureList() {
           `${date.getFullYear()}${('0' + (date.getMonth() + 1)).slice(-2)}${(
                '0' + date.getDate()
           ).slice(-2)}`;
-     const endDate = '20250801';
-     const beginDate = '20250701';
+
+     const endDate = formatDate(today);
+     const beginDate = formatDate(oneMonthAgo);
+
+     Logger.log(`조회 기간: ${beginDate} ~ ${endDate}`);
+     // const endDate = '20250814';
+     // const beginDate = '20250701';
 
      const lastRcpNo = getLastRcpNo();
      Logger.log(
@@ -708,15 +755,14 @@ async function fetchDisclosureList() {
                : '저장된 접수번호가 없습니다. 최신 공시부터 가져옵니다.'
      );
 
-     const TARGET_COUNT = 10; // ★★★ 여기서 수집할 최대 개수를 설정합니다 ★★★
-     const MAX_PAGES_TO_FETCH = 50;
+     const TARGET_COUNT = 100;
+     const MAX_PAGES_TO_FETCH = 100;
      let collectedReports = [];
      let pageNo = 1;
      let totalPages = 1;
      let stopCollecting = false;
 
      try {
-          // ★★★ [수정] while 루프 조건에 TARGET_COUNT 체크 추가 ★★★
           while (
                !stopCollecting &&
                collectedReports.length < TARGET_COUNT &&
@@ -745,15 +791,15 @@ async function fetchDisclosureList() {
                totalPages = result.total_page;
 
                for (const report of result.list) {
-                    if (lastRcpNo && report.rcept_no === lastRcpNo) {
+                    // ★★★ [수정] 저장된 rcpNo보다 작거나 '같은' 공시를 만나면 즉시 중단 ★★★
+                    if (lastRcpNo && report.rcept_no <= lastRcpNo) {
                          Logger.log(
-                              ` -> 이전에 처리한 공시(${lastRcpNo})에 도달하여 수집을 중단합니다.`
+                              ` -> 이전에 처리했거나 더 오래된 공시(${report.rcept_no})에 도달하여 수집을 중단합니다.`
                          );
                          stopCollecting = true;
                          break;
                     }
 
-                    // ★★★ [수정] 필터링된 공시를 추가하기 전에도 TARGET_COUNT를 확인 ★★★
                     if (collectedReports.length >= TARGET_COUNT) {
                          Logger.log(
                               ` -> TARGET_COUNT(${TARGET_COUNT}개)에 도달하여 수집을 중단합니다.`
@@ -812,7 +858,7 @@ async function processSingleDisclosure(report) {
           return { ...report, ...numbers, error: '파싱 URL 생성 실패' };
      }
 
-     Logger.log(' -> 상세 실적 추출 시작...');
+     // Logger.log(' -> 상세 실적 추출 시작...');
      let extractedData;
      if (reportType === 'PERIODIC') {
           extractedData = await extractPeriodicEarnings(
@@ -846,7 +892,7 @@ async function processSingleDisclosure(report) {
      const marketCap = await getMarketCap(report.stock_code);
      await Utilities.sleep(200);
 
-     Logger.log(` -> 과거 분기 실적 조회 시작... (유형: ${statementType})`);
+     // Logger.log(` -> 과거 분기 실적 조회 시작... (유형: ${statementType})`);
      const naverEarnings = await getQuarterlyEarnings(
           report.stock_code,
           statementType
@@ -911,13 +957,13 @@ async function processSingleDisclosure(report) {
           }
      }
 
-     Logger.log(' -> DART 실적과 네이버 실적 데이터 통합 및 계산...');
+     // Logger.log(' -> DART 실적과 네이버 실적 데이터 통합 및 계산...');
      const final5QuartersData = calculate5QuarterEarnings(
           extractedData,
           naverEarnings
      );
 
-     Logger.log(' -> 실적 중요도 점수 계산...');
+     // Logger.log(' -> 실적 중요도 점수 계산...');
      const importanceScores = calculateImportanceScore(
           final5QuartersData,
           consensus
@@ -938,9 +984,30 @@ async function processSingleDisclosure(report) {
 /**
  * 메인 워크플로우 함수
  */
-async function runSequentialProcessing() {
+async function runSequentialProcessing(sendOnlyImportant = false) {
      try {
           Logger.log('--- 전체 공시 순차 처리 시작 ---');
+
+          const lastRcpNo = getLastRcpNo();
+
+          // ★★★ [수정] 최초 실행 로직 ★★★
+          if (!lastRcpNo) {
+               Logger.log('최초 실행 감지. 최신 공시 번호로 초기화합니다.');
+               const latestRcpNo = await fetchLatestRcpNo();
+               if (latestRcpNo) {
+                    saveLastRcpNo(latestRcpNo);
+                    Logger.log(
+                         `초기화 완료(${latestRcpNo}). 다음 실행부터 분석을 시작합니다.`
+                    );
+               } else {
+                    Logger.log(
+                         '오류: 최신 공시 번호를 가져오지 못했습니다. 다음 실행 시 재시도합니다.'
+                    );
+               }
+               Logger.log(`\n--- 전체 공시 순차 처리 완료 (초기화) ---`);
+               return; // 초기화 후 즉시 종료
+          }
+
           const reportsToProcess = await fetchDisclosureList();
 
           if (!reportsToProcess) {
@@ -956,62 +1023,112 @@ async function runSequentialProcessing() {
           }
 
           for (const [index, report] of reportsToProcess.entries()) {
-               const result = await processSingleDisclosure(report);
-               const isSuccess = result && result.quarterlyEarnings;
+               try {
+                    const result = await processSingleDisclosure(report);
+                    const isSuccess = result && result.quarterlyEarnings;
 
-               Logger.log(
-                    `[개별 처리 완료 ${index + 1}/${reportsToProcess.length}] ${
-                         report.corp_name
-                    } -> 결과: ${isSuccess ? '성공' : '실패/건너뜀'}`
-               );
+                    // Logger.log(
+                    //      `[개별 처리 완료 ${index + 1}/${reportsToProcess.length}] ${
+                    //           report.corp_name
+                    //      } -> 결과: ${isSuccess ? '성공' : '실패/건너뜀'}`
+                    // );
 
-               if (isSuccess) {
-                    const mediaBlobs = [];
-                    Logger.log(' -> 차트 이미지 생성 시도...');
-                    const stockChart = await generateStockChartImage(
-                         result.stock_code,
-                         result.corp_name
-                    );
-                    if (stockChart) mediaBlobs.push(stockChart);
-                    const bandCharts = await generatePerPbrBandCharts(
-                         result.stock_code
-                    );
-                    if (bandCharts) {
-                         if (bandCharts.perChart)
-                              mediaBlobs.push(bandCharts.perChart);
-                         if (bandCharts.pbrChart)
-                              mediaBlobs.push(bandCharts.pbrChart);
+                    if (isSuccess) {
+                         let shouldSendMessage = true;
+
+                         // ★★★ [수정] 중요도 필터링 로직 (안전장치 추가) ★★★
+                         if (sendOnlyImportant) {
+                              // 1. result.importanceScores 객체가 존재하는지 먼저 확인
+                              if (result.importanceScores) {
+                                   const { sales, operatingProfit } =
+                                        result.importanceScores;
+                                   if (sales < 5 && operatingProfit < 5) {
+                                        shouldSendMessage = false;
+                                        Logger.log(
+                                             ` -> 중요도 낮음(매출:${sales}, 영익:${operatingProfit}). 텔레그램 전송을 건너뜁니다.`
+                                        );
+                                   } else {
+                                        Logger.log(
+                                             ` -> 중요도 높음(매출:${sales}, 영익:${operatingProfit}). 텔레그램으로 전송합니다.`
+                                        );
+                                   }
+                              } else {
+                                   // 2. importanceScores가 없으면 (데이터 수집이 불완전하면) 전송하지 않음
+                                   shouldSendMessage = false;
+                                   Logger.log(
+                                        ` -> 중요도 점수 없음 (데이터 수집 불완전). 텔레그램 전송을 건너뜁니다.`
+                                   );
+                              }
+                         }
+
+                         if (shouldSendMessage) {
+                              const mediaBlobs = [];
+                              Logger.log(' -> 차트 이미지 생성 시도...');
+                              const stockChart = await generateStockChartImage(
+                                   result.stock_code,
+                                   result.corp_name
+                              );
+                              if (stockChart) mediaBlobs.push(stockChart);
+                              const bandCharts = await generatePerPbrBandCharts(
+                                   result.stock_code
+                              );
+                              if (bandCharts) {
+                                   if (bandCharts.perChart)
+                                        mediaBlobs.push(bandCharts.perChart);
+                                   if (bandCharts.pbrChart)
+                                        mediaBlobs.push(bandCharts.pbrChart);
+                              }
+                              const consensusCharts =
+                                   await generateConsensusCharts(
+                                        'A' + result.stock_code,
+                                        new Date().getFullYear() + '12'
+                                   );
+                              if (consensusCharts) {
+                                   if (consensusCharts.revenueChart)
+                                        mediaBlobs.push(
+                                             consensusCharts.revenueChart
+                                        );
+                                   if (consensusCharts.opChart)
+                                        mediaBlobs.push(
+                                             consensusCharts.opChart
+                                        );
+                              }
+
+                              const caption = createTelegramCaption(result);
+
+                              if (mediaBlobs.length > 0) {
+                                   Logger.log(
+                                        ' -> 미디어를 텔레그램으로 전송합니다.'
+                                   );
+                                   await sendTelegramMediaGroup(
+                                        mediaBlobs,
+                                        caption
+                                   );
+                              } else {
+                                   Logger.log(
+                                        ' -> 텍스트를 텔레그램으로 전송합니다.'
+                                   );
+                                   await sendTelegramMessage(caption);
+                              }
+                         }
+                         saveLastRcpNo(result.rcept_no);
                     }
-                    const consensusCharts = await generateConsensusCharts(
-                         'A' + result.stock_code,
-                         new Date().getFullYear() + '12'
-                    );
-                    if (consensusCharts) {
-                         if (consensusCharts.revenueChart)
-                              mediaBlobs.push(consensusCharts.revenueChart);
-                         if (consensusCharts.opChart)
-                              mediaBlobs.push(consensusCharts.opChart);
+                    await Utilities.sleep(500);
+               } catch (error) {
+                    try {
+                         if (result && result.rcept_no) {
+                              saveLastRcpNo(result.rcept_no);
+                         }
+                    } catch {
+                         Logger.log(' -> 오류 발생 시 접수번호 저장 실패');
                     }
-
-                    const caption = createTelegramCaption(result);
-
-                    if (mediaBlobs.length > 0) {
-                         Logger.log(' -> 미디어를 텔레그램으로 전송합니다.');
-                         await sendTelegramMediaGroup(mediaBlobs, caption);
-                    } else {
-                         Logger.log(' -> 텍스트를 텔레그램으로 전송합니다.');
-                         await sendTelegramMessage(caption);
-                    }
-
-                    saveLastRcpNo(result.rcept_no);
+                    Logger.log(`개별 리포트 처리 중 오류 발생: ${error}`);
+                    continue; // 오류 발생 시 다음 리포트로 넘어감
                }
-
-               await Utilities.sleep(500);
           }
      } catch (e) {
           Logger.log(`처리 중 심각한 오류 발생 !! ${e.stack}`);
      }
-
      Logger.log(`\n--- 전체 공시 순차 처리 완료 ---`);
 }
 
@@ -1079,8 +1196,12 @@ function formatNumberWithCommas(num) {
      });
 }
 
-async function runFullProcessAndLogResults() {
-     await runSequentialProcessing();
+/**
+ * ★★★ [수정] 전체 프로세스 실행 함수 (인자 추가) ★★★
+ * @param {boolean} sendOnlyImportant - true로 설정 시 중요도 5 이상만 텔레그램 전송
+ */
+async function runFullProcessAndLogResults(sendOnlyImportant = false) {
+     await runSequentialProcessing(sendOnlyImportant);
 }
 
 async function testSingleRcpNo_AutoDetect(rcpNo) {
@@ -1156,5 +1277,5 @@ async function testSingleRcpNo_AutoDetect(rcpNo) {
 // =================================================================
 (async () => {
      // await testSingleRcpNo_AutoDetect("000020")
-     await runFullProcessAndLogResults();
+     await runFullProcessAndLogResults(true);
 })();

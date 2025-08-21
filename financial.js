@@ -38,9 +38,9 @@ async function getQuarterlyEarnings(companyCode, statementType) {
      const finGubun = statementType === '연결' ? 'IFRSL' : 'IFRSS';
      const url = `https://wisefn.finance.daum.net/v1/company/cF3001.aspx?cmp_cd=${companyCode}&frq=Q&rpt=ISM&finGubun=${finGubun}`;
 
-     Logger.log(
-          ` -> Daum 증권 데이터 조회 시도... [${companyCode}, ${statementType}]`
-     );
+     // Logger.log(
+     //      ` -> Daum 증권 데이터 조회 시도... [${companyCode}, ${statementType}]`
+     // );
 
      try {
           const response = await axios.get(url, {
@@ -104,9 +104,9 @@ async function getQuarterlyEarnings(companyCode, statementType) {
                return null;
           }
 
-          Logger.log(
-               ` -> 총 ${quarterlyData.length}개의 분기별 실적 데이터 추출 완료.`
-          );
+          // Logger.log(
+          //      ` -> 총 ${quarterlyData.length}개의 분기별 실적 데이터 추출 완료.`
+          // );
           return quarterlyData;
      } catch (e) {
           Logger.log(` -> Daum 증권 HTML 파싱 중 오류 발생: ${e.toString()}`);
@@ -125,7 +125,7 @@ async function getMarketCap(stockCode) {
           return null;
      }
      const url = `https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd=${stockCode}&cn=`;
-     Logger.log(` -> 시가총액 조회 시도... [${stockCode}]`);
+     // Logger.log(` -> 시가총액 조회 시도... [${stockCode}]`);
 
      try {
           const response = await axios.get(url, {
@@ -161,9 +161,9 @@ async function getMarketCap(stockCode) {
           const marketCapInEok = parseInt(cleanedText, 10);
 
           if (!isNaN(marketCapInEok)) {
-               Logger.log(
-                    ` -> 시가총액 추출 성공: ${marketCapText} -> ${marketCapInEok.toLocaleString()}억원`
-               );
+               // Logger.log(
+               //      ` -> 시가총액 추출 성공: ${marketCapText} -> ${marketCapInEok.toLocaleString()}억원`
+               // );
                return marketCapInEok;
           } else {
                Logger.log(` -> 시가총액 숫자 변환 실패: "${marketCapText}"`);

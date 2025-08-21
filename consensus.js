@@ -64,11 +64,11 @@ async function getNaverConsensus(companyCode, statementType, quarter) {
           });
 
           if (targetData) {
-               Logger.log(
-                    ` -> ${quarter} 컨센서스 데이터 찾음: ${JSON.stringify(
-                         targetData
-                    )}`
-               );
+               // Logger.log(
+               //      ` -> ${quarter} 컨센서스 데이터 찾음: ${JSON.stringify(
+               //           targetData
+               //      )}`
+               // );
                return {
                     sales:
                          parseFloat(targetData.SALES.replace(/,/g, '')) || null,

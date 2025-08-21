@@ -1,4 +1,3 @@
-
 const { Logger } = require('./gas-compatibility');
 
 /**
@@ -69,13 +68,13 @@ function calculate5QuarterEarnings(dartData, naverEarnings) {
                ) {
                     const originalValue = d.value;
                     d.value -= sumOfQuarters[d.item];
-                    Logger.log(
-                         ` -> 4분기 실적 변환: [${
-                              d.item
-                         }] ${originalValue.toFixed(3)} - ${sumOfQuarters[
-                              d.item
-                         ].toFixed(3)} = ${d.value.toFixed(3)} (억원)`
-                    );
+                    // Logger.log(
+                    //      ` -> 4분기 실적 변환: [${
+                    //           d.item
+                    //      }] ${originalValue.toFixed(3)} - ${sumOfQuarters[
+                    //           d.item
+                    //      ].toFixed(3)} = ${d.value.toFixed(3)} (억원)`
+                    // );
                }
           });
      }

@@ -24,7 +24,7 @@ async function generateStockChartImage(symbol, stockName) {
                'yyyyMMdd'
           );
 
-          Logger.log(`[${stockName}] 1년치 주가 데이터 수집 중...`);
+          // Logger.log(`[${stockName}] 1년치 주가 데이터 수집 중...`);
           const stockData = await fetchStockData(symbol, startTime, endTime);
 
           if (!stockData || stockData.length <= 1) {
@@ -33,7 +33,7 @@ async function generateStockChartImage(symbol, stockName) {
           }
 
           const title = `[${stockName} (${symbol})] 최근 1년 주가`;
-          Logger.log('차트 이미지 생성 중...');
+          // Logger.log('차트 이미지 생성 중...');
           // [수정] 새로운 로컬 차트 생성 함수 호출
           return await createStockChart(stockData, title);
      } catch (e) {
@@ -44,15 +44,15 @@ async function generateStockChartImage(symbol, stockName) {
 
 async function generatePerPbrBandCharts(symbol) {
      try {
-          Logger.log(`[${symbol}] PER/PBR 밴드 데이터 수집을 시작합니다...`);
+          // Logger.log(`[${symbol}] PER/PBR 밴드 데이터 수집을 시작합니다...`);
           const rawData = await fetchBandChartData(symbol);
           if (!rawData) {
                Logger.log('밴드 차트 데이터를 가져오는 데 실패했습니다.');
                return null;
           }
-          Logger.log('데이터 수집 성공.');
+          // Logger.log('데이터 수집 성공.');
 
-          Logger.log('PER 밴드 차트 생성을 시작합니다...');
+          // Logger.log('PER 밴드 차트 생성을 시작합니다...');
           const perData = parseBandDataForGoogleCharts(rawData.bandChart1);
 
           // [수정] 새로운 로컬 차트 생성 함수 호출
@@ -61,7 +61,7 @@ async function generatePerPbrBandCharts(symbol) {
                : null;
           if (!perChartBlob) Logger.log('PER 밴드 차트 생성에 실패했습니다.');
 
-          Logger.log('PBR 밴드 차트 생성을 시작합니다...');
+          // Logger.log('PBR 밴드 차트 생성을 시작합니다...');
           const pbrData = parseBandDataForGoogleCharts(rawData.bandChart2);
 
           // [수정] 새로운 로컬 차트 생성 함수 호출
@@ -71,7 +71,7 @@ async function generatePerPbrBandCharts(symbol) {
           if (!pbrChartBlob) Logger.log('PBR 밴드 차트 생성에 실패했습니다.');
 
           if (perChartBlob || pbrChartBlob) {
-               Logger.log('모든 밴드 차트 생성이 완료되었습니다.');
+               // Logger.log('모든 밴드 차트 생성이 완료되었습니다.');
                return { perChart: perChartBlob, pbrChart: pbrChartBlob };
           }
           return null;
@@ -99,9 +99,9 @@ async function generateConsensusCharts(stockCode, year) {
           Logger.log(
                `[${companyName}(${stockCode})] -> Company ID [${companyId}] 조회 성공.`
           );
-          Logger.log(
-               `[${companyId} - ${year}] 컨센서스 데이터 수집을 시작합니다...`
-          );
+          // Logger.log(
+          //      `[${companyId} - ${year}] 컨센서스 데이터 수집을 시작합니다...`
+          // );
           const consensusData = await fetchConsensusData(companyId, year);
           if (!consensusData || consensusData.length === 0) {
                Logger.log(
@@ -109,7 +109,7 @@ async function generateConsensusCharts(stockCode, year) {
                );
                return null;
           }
-          Logger.log(`데이터 수집 성공. (총 ${consensusData.length}개)`);
+          // Logger.log(`데이터 수집 성공. (총 ${consensusData.length}개)`);
 
           const revenueChartData = [['날짜', '매출액']];
           const opChartData = [['날짜', '영업이익']];

@@ -38,15 +38,24 @@ function formatEarningsWithConsensus(
      consensus,
      importanceText = ''
 ) {
-     let output = `*${label}:* ${formatNumberWithCommas(actual)}`;
+     let output = `*${label}:* ${formatNumberWithCommas(actual)}억 `;
      if (consensus !== null && consensus !== undefined && consensus !== 0) {
-          const achievementRate =
-               consensus > 0
-                    ? ((actual / consensus - 1) * 100).toFixed(0) + '%'
-                    : '-';
+          let achievementRate = 0;
+          if (consensus > 0) {
+               achievementRate = (actual > consensus) - 1;
+               achievementRate =
+                    achievementRate > 0
+                         ? `🔺 ${achievementRate.toFixed(0)}%`
+                         : achievementRate < 0
+                         ? `▼ ${Math.abs(achievementRate.toFixed(0))}%`
+                         : `${achievementRate.toFixed(0)}%`;
+          } else {
+               achievementRate = '-';
+          }
+
           output += ` (${formatNumberWithCommas(
                consensus
-          )}, ${achievementRate})`;
+          )}억, ${achievementRate}) `;
      }
      output += importanceText;
      return output;
@@ -101,7 +110,8 @@ function calculateImportanceScore(quarterlyEarnings, consensus) {
      const importance = { sales: 0, operatingProfit: 0, netIncome: 0 };
      const factors = ['forecast', 'yoy', 'qoq'];
 
-     for (const key of ['sales', 'operatingProfit', 'netIncome']) {
+     // ★★★ [수정] 'netIncome'을 분석 대상에서 제외 ★★★
+     for (const key of ['sales', 'operatingProfit']) {
           let totalScore = 0;
           const { actual } = structuredData[key];
 
@@ -144,7 +154,6 @@ function calculateImportanceScore(quarterlyEarnings, consensus) {
                          scoreForFactor = -20;
                     }
                }
-
                totalScore += scoreForFactor;
           }
 
@@ -159,7 +168,6 @@ function calculateImportanceScore(quarterlyEarnings, consensus) {
           if (actual < 0) finalImportance = 0;
           importance[key] = finalImportance;
      }
-
      return importance;
 }
 
@@ -285,14 +293,14 @@ function createTelegramCaption(result) {
 
           // 4. 과거 실적 테이블 생성
           caption += '\n------------------------------------\n';
-          caption += '`[분기]` `매출` `영업` `순익` (억원)\n';
+          // caption += '`[분기]` `매출` `영업` `순익` (억원)\n';
 
           for (const quarter in earningsByQuarter) {
                const qEarnings = earningsByQuarter[quarter];
                const sales = padNumber(qEarnings.sales, 7);
                const op = padNumber(qEarnings.operatingProfit, 7);
                const ni = padNumber(qEarnings.netIncome, 7);
-               caption += `*[${quarter}]* ${sales} ${op} ${ni}\n`;
+               caption += `*[${quarter}]* ${sales}억 ${op}억 ${ni}억\n`;
           }
           caption += '------------------------------------';
      } else {
